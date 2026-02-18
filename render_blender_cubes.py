@@ -30,14 +30,14 @@ class Settings:
     render_samples  = 64        # 16=test, 128+=final
     render_engine   = "CYCLES"  # "CYCLES" or "BLENDER_EEVEE_NEXT"
     use_gpu         = True
-    fps             = 30
+    fps             = 60
 
     # ── Camera (orthographic at a jump-friendly angle) ────────
     ortho_padding       = 1.16
     camera_follow       = False
     camera_track_alpha  = 0.75
     camera_elevation_deg = 30.0   # requested: ~30° above ground plane
-    camera_azimuth_deg   = 32.0
+    camera_azimuth_deg   = 212.0  # rotated 180° around Z from previous 32°
     camera_distance_min  = 9.0
     camera_distance_mult = 2.5
 
@@ -78,41 +78,41 @@ class Settings:
     # label → (R, G, B) in 0–1.
     # Shared palette between both cubes for direct material comparison.
     theme_cube1 = {
-        "name": "CubeTheme",
-        "default": (0.26, 0.41, 0.56),
-        0: (0.26, 0.41, 0.56),
-        1: (0.91, 0.42, 0.44),
-        2: (0.28, 0.74, 0.67),
-        3: (0.95, 0.74, 0.33),
-        4: (0.47, 0.59, 0.90),
-        5: (0.66, 0.85, 0.42),
-        6: (0.72, 0.51, 0.83),
-        7: (0.95, 0.61, 0.34),
-        8: (0.40, 0.77, 0.57),
-        9: (0.89, 0.53, 0.72),
+        "name": "StudioBlue",
+        "default": (0.064, 0.176, 0.60),
+        0: (0.064, 0.176, 0.60),
+        1: (0.45, 0.08, 0.10),
+        2: (0.08, 0.32, 0.28),
+        3: (0.40, 0.28, 0.04),
+        4: (0.10, 0.18, 0.45),
+        5: (0.18, 0.34, 0.08),
+        6: (0.26, 0.10, 0.38),
+        7: (0.42, 0.18, 0.06),
+        8: (0.08, 0.30, 0.18),
+        9: (0.38, 0.08, 0.24),
     }
 
     theme_cube2 = {
-        "name": "CubeTheme",
-        "default": (0.26, 0.41, 0.56),
-        0: (0.26, 0.41, 0.56),
-        1: (0.91, 0.42, 0.44),
-        2: (0.28, 0.74, 0.67),
-        3: (0.95, 0.74, 0.33),
-        4: (0.47, 0.59, 0.90),
-        5: (0.66, 0.85, 0.42),
-        6: (0.72, 0.51, 0.83),
-        7: (0.95, 0.61, 0.34),
-        8: (0.40, 0.77, 0.57),
-        9: (0.89, 0.53, 0.72),
+        "name": "StudioBlue",
+        "default": (0.064, 0.176, 0.60),
+        0: (0.064, 0.176, 0.60),
+        1: (0.45, 0.08, 0.10),
+        2: (0.08, 0.32, 0.28),
+        3: (0.40, 0.28, 0.04),
+        4: (0.10, 0.18, 0.45),
+        5: (0.18, 0.34, 0.08),
+        6: (0.26, 0.10, 0.38),
+        7: (0.42, 0.18, 0.06),
+        8: (0.08, 0.30, 0.18),
+        9: (0.38, 0.08, 0.24),
     }
 
     # ── Material ──────────────────────────────────────────────
-    roughness       = 0.30
-    specular        = 0.30
+    roughness       = 0.85
+    specular        = 0.05
     metallic        = 0.0
-    emission_body   = 0.01
-    emission_label  = 0.03
+    emission_body   = 0.005
+    emission_label  = 0.035
     color_attribute_name = "LabelColor"
     # Keep smoothing but weaker than fish setup to preserve material changes.
     color_blend_iters    = 1

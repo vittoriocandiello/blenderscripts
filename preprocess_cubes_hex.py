@@ -301,7 +301,7 @@ def main():
     print(f"\nDone -> {os.path.abspath(args.out)}")
     print(
         "Next: blender --background --python render_blender_cubes.py -- "
-        f"--input {args.out} --output renders_cubes/"
+        f"--input {args.out} --output renders/"
     )
 
 

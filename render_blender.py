@@ -114,7 +114,7 @@ class Settings:
     color_blend_self_weight = 2.5
 
     # ── Reference lines (invisible) ───────────────────────────
-    line_color      = (0.0, 0.0, 0.0, 0.0)
+    line_color      = (0.0, 0.0, 0.0)
     line_thickness  = 0.0
     line_extend     = 0.0
     line_emission   = 0.0
@@ -271,6 +271,15 @@ def set_node_input(node, name_or_names, value):
             node.inputs[nm].default_value = value
             return True
     return False
+
+
+def to_rgba(color):
+    c = tuple(color)
+    if len(c) == 4:
+        return c
+    if len(c) == 3:
+        return (c[0], c[1], c[2], 1.0)
+    raise ValueError(f"Expected RGB or RGBA color, got length {len(c)}: {c}")
 
 
 def create_material(name, emission_strength):
@@ -689,7 +698,7 @@ def create_reference_line(x_min, x_max, y_pos, z_pos):
         nodes.remove(n)
     out = nodes.new("ShaderNodeOutputMaterial")
     em = nodes.new("ShaderNodeEmission")
-    set_node_input(em, "Color", (*CFG.line_color, 1.0))
+    set_node_input(em, "Color", to_rgba(CFG.line_color))
     set_node_input(em, "Strength", CFG.line_emission)
     links.new(em.outputs["Emission"], out.inputs["Surface"])
     line.data.materials.append(mat)
@@ -728,8 +737,8 @@ def create_checkerboard_background(x_min, x_max, y_min, y_max, z_pos):
 
     tile_size = max(span_x / max(CFG.checker_tiles_x, 2), 1e-3)
     set_node_input(mapping, "Scale", (ext_x / tile_size, ext_y / tile_size, 1.0))
-    set_node_input(checker, "Color1", (*CFG.checker_color_a, 1.0))
-    set_node_input(checker, "Color2", (*CFG.checker_color_b, 1.0))
+    set_node_input(checker, "Color1", to_rgba(CFG.checker_color_a))
+    set_node_input(checker, "Color2", to_rgba(CFG.checker_color_b))
     set_node_input(checker, "Scale", 1.0)
     set_node_input(emission, "Strength", CFG.checker_emission)
 

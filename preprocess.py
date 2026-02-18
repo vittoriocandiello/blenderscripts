@@ -45,6 +45,87 @@ def parse_pvd(pvd_path):
     return items
 
 
+def orient_surface_triangles(vertices, triangles):
+    """
+    Enforce consistent winding on a triangle surface mesh, then orient each
+    connected component outward using signed volume (fallback: centroid test).
+    """
+    tri = np.asarray(triangles, dtype=np.int64)
+    n_faces = len(tri)
+    if n_faces == 0:
+        return tri
+
+    # Build face adjacency through undirected edges, tracking local edge direction.
+    edges = {}
+    for fi, (a, b, c) in enumerate(tri):
+        for u, v in ((a, b), (b, c), (c, a)):
+            if u == v:
+                continue
+            key = (u, v) if u < v else (v, u)
+            direction = 1 if (u, v) == key else -1
+            edges.setdefault(key, []).append((fi, direction))
+
+    neighbors = [[] for _ in range(n_faces)]
+    for items in edges.values():
+        if len(items) < 2:
+            continue
+        # Pairwise constraints also cover non-manifold edges gracefully.
+        for i in range(len(items) - 1):
+            fi, di = items[i]
+            for j in range(i + 1, len(items)):
+                fj, dj = items[j]
+                # Shared edge should be traversed in opposite directions.
+                relation_flip = (di == dj)
+                neighbors[fi].append((fj, relation_flip))
+                neighbors[fj].append((fi, relation_flip))
+
+    flips = np.full((n_faces,), -1, dtype=np.int8)  # -1 unknown, 0 keep, 1 flip
+    components = []
+    for seed in range(n_faces):
+        if flips[seed] != -1:
+            continue
+        flips[seed] = 0
+        stack = [seed]
+        comp = [seed]
+        while stack:
+            f = stack.pop()
+            cur = int(flips[f])
+            for nb, rel_flip in neighbors[f]:
+                expected = cur ^ int(rel_flip)
+                if flips[nb] == -1:
+                    flips[nb] = expected
+                    stack.append(nb)
+                    comp.append(nb)
+        components.append(comp)
+
+    tri_out = tri.copy()
+    for fi in np.where(flips == 1)[0]:
+        tri_out[fi, 1], tri_out[fi, 2] = tri_out[fi, 2], tri_out[fi, 1]
+
+    for comp in components:
+        comp_idx = np.asarray(comp, dtype=np.int64)
+        t = tri_out[comp_idx]
+        tv = vertices[t]
+
+        # Signed volume for closed component; orientation should be positive.
+        vol = float(np.sum(np.einsum("ij,ij->i", tv[:, 0], np.cross(tv[:, 1], tv[:, 2]))) / 6.0)
+        if abs(vol) < 1e-12:
+            used = np.unique(t.ravel())
+            centroid = vertices[used].mean(axis=0)
+            normals = np.cross(tv[:, 1] - tv[:, 0], tv[:, 2] - tv[:, 0])
+            centers = tv.mean(axis=1)
+            score = float(np.mean(np.einsum("ij,ij->i", normals, centers - centroid)))
+            should_flip = score < 0.0
+        else:
+            should_flip = vol < 0.0
+
+        if should_flip:
+            for fi in comp_idx:
+                tri_out[fi, 1], tri_out[fi, 2] = tri_out[fi, 2], tri_out[fi, 1]
+
+    return tri_out
+
+
 def extract_surface_tets(vertices, elements):
     if len(elements) == 0:
         return np.empty((0, 3), dtype=np.int64), np.empty((0,), dtype=np.int64)
@@ -80,7 +161,33 @@ def extract_surface_tets(vertices, elements):
         if cnt == 1:
             ei, v = face_info[key]
             tris.append(list(v)); tri2elem.append(ei)
-    return np.array(tris, dtype=np.int64), np.array(tri2elem, dtype=np.int64)
+
+    if not tris:
+        return np.empty((0, 3), dtype=np.int64), np.empty((0,), dtype=np.int64)
+
+    tris_arr = np.asarray(tris, dtype=np.int64)
+    tri2elem_arr = np.asarray(tri2elem, dtype=np.int64)
+
+    # Filter degenerate triangles (zero area / repeated vertices).
+    valid_idx = (
+        (tris_arr[:, 0] != tris_arr[:, 1]) &
+        (tris_arr[:, 1] != tris_arr[:, 2]) &
+        (tris_arr[:, 2] != tris_arr[:, 0])
+    )
+    if np.any(valid_idx):
+        tv = vertices[tris_arr[valid_idx]]
+        area2 = np.linalg.norm(np.cross(tv[:, 1] - tv[:, 0], tv[:, 2] - tv[:, 0]), axis=1)
+        keep_local = area2 > 1e-12
+        valid_pos = np.flatnonzero(valid_idx)
+        valid_idx[:] = False
+        valid_idx[valid_pos[keep_local]] = True
+    if not np.any(valid_idx):
+        return np.empty((0, 3), dtype=np.int64), np.empty((0,), dtype=np.int64)
+
+    tris_arr = tris_arr[valid_idx]
+    tri2elem_arr = tri2elem_arr[valid_idx]
+    tris_arr = orient_surface_triangles(vertices, tris_arr)
+    return tris_arr, tri2elem_arr
 
 
 def compact_mesh(vertices, triangles):

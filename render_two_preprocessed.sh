@@ -5,7 +5,8 @@ set -euo pipefail
 #   BLENDER_MODE=snap|bin   (default: snap)
 #   BLENDER_BIN=/path/to/blender  (used only when BLENDER_MODE=bin)
 #   PY_SCRIPT=render_blender.py
-#   RES_X=1920 RES_Y=1080 SAMPLES=128 ENGINE=CYCLES FPS=30
+#   RES_X=1920 RES_Y=1080 SAMPLES=128 ENGINE=CYCLES FPS=60
+#   INPUT_DIR=preprocessed OUTPUT_DIR=renders
 BLENDER_MODE="${BLENDER_MODE:-snap}"
 BLENDER_BIN="${BLENDER_BIN:-blender}"
 PY_SCRIPT="${PY_SCRIPT:-render_blender.py}"
@@ -13,7 +14,9 @@ RES_X="${RES_X:-1920}"
 RES_Y="${RES_Y:-1080}"
 SAMPLES="${SAMPLES:-128}"
 ENGINE="${ENGINE:-CYCLES}"
-FPS="${FPS:-30}"
+FPS="${FPS:-60}"
+INPUT_DIR="${INPUT_DIR:-preprocessed}"
+OUTPUT_DIR="${OUTPUT_DIR:-renders}"
 
 DRY_RUN=0
 for arg in "$@"; do
@@ -24,15 +27,16 @@ for arg in "$@"; do
 Usage: ./render_two_preprocessed.sh [--dry-run]
 
 Renders:
-  preprocessed         -> renders_preprocessed
-  preprocessed_neural  -> renders_preprocessed_neural
+  preprocessed -> renders
 
 Defaults:
   BLENDER_MODE=snap (uses: snap run blender)
-  RES_X=1920 RES_Y=1080 SAMPLES=128 ENGINE=CYCLES FPS=30
+  RES_X=1920 RES_Y=1080 SAMPLES=128 ENGINE=CYCLES FPS=60
+  INPUT_DIR=preprocessed OUTPUT_DIR=renders
 
 Override examples:
   BLENDER_MODE=bin BLENDER_BIN=blender ./render_two_preprocessed.sh
+  INPUT_DIR=preprocessed OUTPUT_DIR=renders PY_SCRIPT=render_blender_cubes.py ./render_two_preprocessed.sh
   RES_X=2560 RES_Y=1440 SAMPLES=192 ./render_two_preprocessed.sh --dry-run
 EOF
             exit 0
@@ -88,7 +92,6 @@ run_render() {
     fi
 }
 
-run_render "preprocessed" "renders_preprocessed"
-run_render "preprocessed_neural" "renders_preprocessed_neural"
+run_render "$INPUT_DIR" "$OUTPUT_DIR"
 
 echo "Done."

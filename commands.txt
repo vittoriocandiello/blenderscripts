@@ -1,20 +1,20 @@
 ./preprocess.py --pvd1 ../ellipsoid/ellipsoid12/ellipsoid.pvd --pvd2 ../ellipsoid/ellipsoid13/seqGeometryActuation.pvd --out preprocessed/
 
 blender --background --python render_blender.py -- \
-    --input preprocessed --output renders_pub \
-    --resolution 1920 1080 --samples 128
+    --input preprocessed --output renders \
+    --resolution 1920 1080 --samples 128 --fps 60
 
 blender --background --python render_blender.py -- \
-    --input preprocessed --output renders_pub \
-    --resolution 1920 1080 --samples 128
+    --input preprocessed --output renders \
+    --resolution 1920 1080 --samples 128 --fps 60
 
 python preprocess_cubes_hex.py \
     --pvd1 <cube_sim_1.pvd> \
     --pvd2 <cube_sim_2.pvd> \
-    --out preprocessed_cubes
+    --out preprocessed
 
 blender --background --python render_blender_cubes.py -- \
-    --input preprocessed_cubes \
-    --output renders_cubes \
+    --input preprocessed \
+    --output renders \
     --resolution 1920 1080 \
-    --samples 128
+    --samples 128 --fps 60
