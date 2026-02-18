@@ -1,0 +1,9 @@
+./preprocess.py --pvd1 ../ellipsoid/ellipsoid12/ellipsoid.pvd --pvd2 ../ellipsoid/ellipsoid13/seqGeometryActuation.pvd --out preprocessed/
+
+blender --background --python render_blender.py -- \
+    --input preprocessed --output renders_pub \
+    --resolution 1920 1080 --samples 128
+
+blender --background --python render_blender.py -- \
+    --input preprocessed --output renders_pub \
+    --resolution 1920 1080 --samples 128
