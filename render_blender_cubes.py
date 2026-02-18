@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-render_blender.py — Headless Blender renderer for two-fish FEM comparison.
-Black background, distinct color themes, orthographic top-down view.
+render_blender_cubes.py — Headless Blender renderer for two jumping/flipping cubes.
+Angled orthographic camera, bright opaque checkerboard ground, reduced color smoothing.
 
 Usage:
-    blender --background --python render_blender.py -- \
+    blender --background --python render_blender_cubes.py -- \
         --input preprocessed/ --output renders/ \
         --resolution 480 270 --samples 16
 
-    blender --background --python render_blender.py -- \
+    blender --background --python render_blender_cubes.py -- \
         --input preprocessed/ --output renders/ \
         --resolution 1920 1080 --samples 128
 """
@@ -30,97 +30,102 @@ class Settings:
     render_samples  = 64        # 16=test, 128+=final
     render_engine   = "CYCLES"  # "CYCLES" or "BLENDER_EEVEE_NEXT"
     use_gpu         = True
-    fps             = 60
+    fps             = 30
 
-    # ── Camera ────────────────────────────────────────────────
-    ortho_padding      = 1.10
-    camera_follow      = False
-    camera_track_alpha = 1.00
-    camera_height_min  = 8.0
-    camera_height_mult = 2.3
+    # ── Camera (orthographic at a jump-friendly angle) ────────
+    ortho_padding       = 1.16
+    camera_follow       = False
+    camera_track_alpha  = 0.75
+    camera_elevation_deg = 30.0   # requested: ~30° above ground plane
+    camera_azimuth_deg   = 32.0
+    camera_distance_min  = 9.0
+    camera_distance_mult = 2.5
 
     # ── Background ────────────────────────────────────────────
-    world_color      = (0.02, 0.02, 0.02)
-    world_strength   = 0.0
+    world_color      = (0.95, 0.97, 1.0)
+    world_strength   = 0.35
     checkerboard_enable = True
-    checker_tiles_x  = 22
-    checker_margin   = 0.20
-    checker_cover_scale = 1.30
-    checker_color_a  = (0.05, 0.05, 0.05)   # dark tile
-    checker_color_b  = (0.02, 0.02, 0.02)   # darker tile
-    checker_emission = 0.0
-    checker_z_offset = 0.10
+    checker_tiles_x  = 18
+    checker_margin   = 0.25
+    checker_cover_scale = 1.45
+    checker_color_a  = (0.88, 0.90, 0.93)
+    checker_color_b  = (0.78, 0.82, 0.88)
+    checker_roughness = 0.92
+    checker_specular  = 0.06
+    checker_z_offset = 0.05
 
     # ── Lighting ──────────────────────────────────────────────
-    key_energy       = 520.0
-    key_color        = (1.0, 0.95, 0.90)    # warm key
+    # Three-point area rig (parented to camera rig).
+    key_energy       = 430.0
+    key_color        = (1.0, 0.97, 0.94)
     key_size_factor  = 0.55
 
-    fill_energy      = 130.0
-    fill_color       = (0.90, 0.93, 1.0)    # cool fill
+    fill_energy      = 220.0
+    fill_color       = (0.90, 0.95, 1.0)
     fill_size_factor = 0.50
 
-    rim_energy       = 120.0
-    rim_color        = (1.0, 0.97, 0.94)    # warm rim
+    rim_energy       = 180.0
+    rim_color        = (0.96, 0.98, 1.0)
     rim_size_factor  = 0.45
 
-    light_spread     = 1.05
-    light_z_factor   = 0.86
+    light_spread     = 1.12
+    light_z_factor   = 0.72
 
-    # ── Fish layout ───────────────────────────────────────────
-    fish_y_gap      = 0.0
+    # ── Cube layout ───────────────────────────────────────────
+    cube_y_gap      = 0.0       # 0 = auto from stream extent
 
     # ── Color themes ──────────────────────────────────────────
-    # Default body: deep saturated blue.
-    # Muscle labels: clearly darker and distinct from the body color.
-    theme_fish1 = {
-        "name": "StudioBlue",
-        "default": (0.064, 0.176, 0.60),    # body
-        0: (0.064, 0.176, 0.60),            # body (label 0)
-        1: (0.45, 0.08, 0.10),              # deep crimson
-        2: (0.08, 0.32, 0.28),              # dark teal
-        3: (0.40, 0.28, 0.04),              # dark amber
-        4: (0.10, 0.18, 0.45),              # dark periwinkle
-        5: (0.18, 0.34, 0.08),              # dark olive green
-        6: (0.26, 0.10, 0.38),              # deep violet
-        7: (0.42, 0.18, 0.06),              # dark burnt orange
-        8: (0.08, 0.30, 0.18),              # dark forest green
-        9: (0.38, 0.08, 0.24),              # deep rose
+    # label → (R, G, B) in 0–1.
+    # Shared palette between both cubes for direct material comparison.
+    theme_cube1 = {
+        "name": "CubeTheme",
+        "default": (0.26, 0.41, 0.56),
+        0: (0.26, 0.41, 0.56),
+        1: (0.91, 0.42, 0.44),
+        2: (0.28, 0.74, 0.67),
+        3: (0.95, 0.74, 0.33),
+        4: (0.47, 0.59, 0.90),
+        5: (0.66, 0.85, 0.42),
+        6: (0.72, 0.51, 0.83),
+        7: (0.95, 0.61, 0.34),
+        8: (0.40, 0.77, 0.57),
+        9: (0.89, 0.53, 0.72),
     }
 
-    theme_fish2 = {
-        "name": "StudioBlue",
-        "default": (0.064, 0.176, 0.60),
-        0: (0.064, 0.176, 0.60),
-        1: (0.45, 0.08, 0.10),
-        2: (0.08, 0.32, 0.28),
-        3: (0.40, 0.28, 0.04),
-        4: (0.10, 0.18, 0.45),
-        5: (0.18, 0.34, 0.08),
-        6: (0.26, 0.10, 0.38),
-        7: (0.42, 0.18, 0.06),
-        8: (0.08, 0.30, 0.18),
-        9: (0.38, 0.08, 0.24),
+    theme_cube2 = {
+        "name": "CubeTheme",
+        "default": (0.26, 0.41, 0.56),
+        0: (0.26, 0.41, 0.56),
+        1: (0.91, 0.42, 0.44),
+        2: (0.28, 0.74, 0.67),
+        3: (0.95, 0.74, 0.33),
+        4: (0.47, 0.59, 0.90),
+        5: (0.66, 0.85, 0.42),
+        6: (0.72, 0.51, 0.83),
+        7: (0.95, 0.61, 0.34),
+        8: (0.40, 0.77, 0.57),
+        9: (0.89, 0.53, 0.72),
     }
 
     # ── Material ──────────────────────────────────────────────
-    roughness       = 0.85      # matte silicone surface
-    specular        = 0.05      # near-zero reflectivity
+    roughness       = 0.30
+    specular        = 0.30
     metallic        = 0.0
-    emission_body   = 0.005     # faint body glow
-    emission_label  = 0.035     # subtle muscle highlight
+    emission_body   = 0.01
+    emission_label  = 0.03
     color_attribute_name = "LabelColor"
-    color_blend_iters    = 2
-    color_blend_self_weight = 2.5
-
-    # ── Reference lines (invisible) ───────────────────────────
-    line_color      = (0.0, 0.0, 0.0, 0.0)
-    line_thickness  = 0.0
-    line_extend     = 0.0
+    # Keep smoothing but weaker than fish setup to preserve material changes.
+    color_blend_iters    = 1
+    color_blend_self_weight = 6.0
+    auto_smooth_angle_deg = 30.0
+    # Kept for compatibility with helper utilities not used in cube scene.
+    line_color      = (0.80, 0.86, 0.95)
+    line_thickness  = 0.004
+    line_extend     = 0.24
     line_emission   = 0.0
 
     # ── Color management ──────────────────────────────────────
-    exposure        = 0.0
+    exposure        = 0.08
     gamma           = 1.0
 
     # ── Video ─────────────────────────────────────────────────
@@ -182,65 +187,65 @@ def save_metadata(meta_path, frames):
     return meta
 
 
-def parse_frame_npz(npz_obj, fp, fish_name):
+def parse_frame_npz(npz_obj, fp, stream_name):
     required = ("vertices", "triangles", "labels")
     missing = [k for k in required if k not in npz_obj]
     if missing:
-        raise ValueError(f"[{fish_name}] {fp} missing keys: {missing}")
+        raise ValueError(f"[{stream_name}] {fp} missing keys: {missing}")
 
     vertices = np.asarray(npz_obj["vertices"], dtype=np.float32)
     triangles = np.asarray(npz_obj["triangles"], dtype=np.int32)
     labels = np.asarray(npz_obj["labels"], dtype=np.int32).reshape(-1)
 
     if vertices.ndim != 2 or vertices.shape[1] < 3:
-        raise ValueError(f"[{fish_name}] invalid vertices in {fp}: {vertices.shape}")
+        raise ValueError(f"[{stream_name}] invalid vertices in {fp}: {vertices.shape}")
     if vertices.shape[1] > 3:
         vertices = vertices[:, :3]
 
     if triangles.ndim != 2 or triangles.shape[1] != 3:
-        raise ValueError(f"[{fish_name}] invalid triangles in {fp}: {triangles.shape}")
+        raise ValueError(f"[{stream_name}] invalid triangles in {fp}: {triangles.shape}")
     if len(triangles) == 0:
-        raise ValueError(f"[{fish_name}] empty triangles in {fp}")
+        raise ValueError(f"[{stream_name}] empty triangles in {fp}")
 
     if len(labels) != len(triangles):
         if len(labels) == 1:
             labels = np.full((len(triangles),), int(labels[0]), dtype=np.int32)
         else:
             raise ValueError(
-                f"[{fish_name}] label/triangle mismatch in {fp}: "
+                f"[{stream_name}] label/triangle mismatch in {fp}: "
                 f"{len(labels)} labels vs {len(triangles)} triangles"
             )
 
     return {"vertices": vertices, "triangles": triangles, "labels": labels}
 
 
-def load_frames(input_dir, fish_name, allow_missing=False):
-    fish_dir = os.path.join(input_dir, fish_name)
-    if not os.path.isdir(fish_dir):
+def load_frames(input_dir, stream_name, allow_missing=False):
+    stream_dir = os.path.join(input_dir, stream_name)
+    if not os.path.isdir(stream_dir):
         if allow_missing:
             return [], None
-        raise FileNotFoundError(f"[{fish_name}] directory not found: {fish_dir}")
+        raise FileNotFoundError(f"[{stream_name}] directory not found: {stream_dir}")
 
-    frame_paths = sorted(glob.glob(os.path.join(fish_dir, "frame_*.npz")))
+    frame_paths = sorted(glob.glob(os.path.join(stream_dir, "frame_*.npz")))
     if not frame_paths:
         if allow_missing:
             return [], None
-        raise FileNotFoundError(f"[{fish_name}] no frame_*.npz files in {fish_dir}")
+        raise FileNotFoundError(f"[{stream_name}] no frame_*.npz files in {stream_dir}")
 
     frames = []
     for fp in frame_paths:
         try:
             with np.load(fp, allow_pickle=False) as d:
-                frames.append(parse_frame_npz(d, fp, fish_name))
+                frames.append(parse_frame_npz(d, fp, stream_name))
         except Exception as exc:
-            print(f"  [{fish_name}] skipping invalid frame {os.path.basename(fp)} ({exc})")
+            print(f"  [{stream_name}] skipping invalid frame {os.path.basename(fp)} ({exc})")
 
     if not frames:
         if allow_missing:
             return [], None
-        raise ValueError(f"[{fish_name}] no valid frame data in {fish_dir}")
+        raise ValueError(f"[{stream_name}] no valid frame data in {stream_dir}")
 
-    meta_path = os.path.join(fish_dir, "metadata.npz")
+    meta_path = os.path.join(stream_dir, "metadata.npz")
     meta = None
     if os.path.isfile(meta_path):
         try:
@@ -255,10 +260,10 @@ def load_frames(input_dir, fish_name, allow_missing=False):
             if n_meta != len(frames):
                 raise ValueError("frame count mismatch")
         except Exception as exc:
-            print(f"  [{fish_name}] invalid metadata.npz ({exc}); rebuilding.")
+            print(f"  [{stream_name}] invalid metadata.npz ({exc}); rebuilding.")
             meta = save_metadata(meta_path, frames)
     else:
-        print(f"  [{fish_name}] metadata.npz missing; rebuilding from frame files.")
+        print(f"  [{stream_name}] metadata.npz missing; rebuilding from frame files.")
         meta = save_metadata(meta_path, frames)
 
     return frames, meta
@@ -449,12 +454,12 @@ def ensure_outward_normals(obj):
 
 
 def apply_surface_shading(obj):
-    """Smooth surface shading for cleaner publication visuals."""
+    """Smooth shading with restrained auto-smooth to keep cube edges readable."""
     for poly in obj.data.polygons:
         poly.use_smooth = True
     if hasattr(obj.data, "use_auto_smooth"):
         obj.data.use_auto_smooth = True
-        obj.data.auto_smooth_angle = math.radians(48.0)
+        obj.data.auto_smooth_angle = math.radians(CFG.auto_smooth_angle_deg)
 
 
 def smooth_track(values, alpha):
@@ -497,6 +502,8 @@ def compute_frame_coverage(frames1, frames2, y_off1, y_off2, n):
     frame_x_max = []
     frame_y_min = []
     frame_y_max = []
+    frame_z_min = []
+    frame_z_max = []
     x_min = float("inf")
     x_max = float("-inf")
     y_min = float("inf")
@@ -527,6 +534,8 @@ def compute_frame_coverage(frames1, frames2, y_off1, y_off2, n):
         frame_x_max.append(float(fmax[0]))
         frame_y_min.append(float(fmin[1]))
         frame_y_max.append(float(fmax[1]))
+        frame_z_min.append(float(fmin[2]))
+        frame_z_max.append(float(fmax[2]))
         x_min = min(x_min, float(fmin[0]))
         x_max = max(x_max, float(fmax[0]))
         y_min = min(y_min, float(fmin[1]))
@@ -550,6 +559,8 @@ def compute_frame_coverage(frames1, frames2, y_off1, y_off2, n):
         "frame_x_max": frame_x_max,
         "frame_y_min": frame_y_min,
         "frame_y_max": frame_y_max,
+        "frame_z_min": frame_z_min,
+        "frame_z_max": frame_z_max,
         "x_min": x_min,
         "x_max": x_max,
         "y_min": y_min,
@@ -561,23 +572,58 @@ def compute_frame_coverage(frames1, frames2, y_off1, y_off2, n):
     }
 
 
-def compute_required_ortho_scale(coverage, x_track, y_track, aspect, padding):
-    """Width-style ortho scale needed to keep all frame bounds inside view."""
+def camera_basis(elevation_deg, azimuth_deg):
+    """Return camera placement vector and projection basis for a fixed angle."""
+    el = math.radians(float(elevation_deg))
+    az = math.radians(float(azimuth_deg))
+
+    to_camera = np.array([
+        math.cos(el) * math.cos(az),
+        math.cos(el) * math.sin(az),
+        math.sin(el),
+    ], dtype=np.float64)
+    to_camera /= max(np.linalg.norm(to_camera), 1e-12)
+
+    # Camera looks back toward the rig center.
+    forward = -to_camera
+    world_up = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    right = np.cross(world_up, forward)
+    if np.linalg.norm(right) < 1e-8:
+        right = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+    right /= np.linalg.norm(right)
+    up = np.cross(forward, right)
+    up /= max(np.linalg.norm(up), 1e-12)
+
+    return to_camera, right, up
+
+
+def compute_required_ortho_scale_angled(coverage, x_track, y_track, track_z, right, up, aspect, padding):
+    """Width-style ortho scale needed for an angled orthographic camera."""
     if aspect <= 0:
         aspect = 1.0
     pad = max(float(padding), 1.0)
     required = 1e-3
-    for fi, (cx, cy) in enumerate(zip(x_track, y_track)):
-        half_x = max(
-            cx - coverage["frame_x_min"][fi],
-            coverage["frame_x_max"][fi] - cx,
+    for fi in range(len(x_track)):
+        cx, cy = float(x_track[fi]), float(y_track[fi])
+        corners = (
+            (coverage["frame_x_min"][fi], coverage["frame_y_min"][fi], coverage["frame_z_min"][fi]),
+            (coverage["frame_x_min"][fi], coverage["frame_y_min"][fi], coverage["frame_z_max"][fi]),
+            (coverage["frame_x_min"][fi], coverage["frame_y_max"][fi], coverage["frame_z_min"][fi]),
+            (coverage["frame_x_min"][fi], coverage["frame_y_max"][fi], coverage["frame_z_max"][fi]),
+            (coverage["frame_x_max"][fi], coverage["frame_y_min"][fi], coverage["frame_z_min"][fi]),
+            (coverage["frame_x_max"][fi], coverage["frame_y_min"][fi], coverage["frame_z_max"][fi]),
+            (coverage["frame_x_max"][fi], coverage["frame_y_max"][fi], coverage["frame_z_min"][fi]),
+            (coverage["frame_x_max"][fi], coverage["frame_y_max"][fi], coverage["frame_z_max"][fi]),
         )
-        half_y = max(
-            cy - coverage["frame_y_min"][fi],
-            coverage["frame_y_max"][fi] - cy,
-        )
-        # Blender ORTHO ortho_scale is camera width.
-        required = max(required, max(2.0 * half_x, 2.0 * half_y * aspect))
+        max_abs_x = 0.0
+        max_abs_y = 0.0
+        for xw, yw, zw in corners:
+            dv = np.array([xw - cx, yw - cy, zw - track_z], dtype=np.float64)
+            px = abs(float(np.dot(dv, right)))
+            py = abs(float(np.dot(dv, up)))
+            max_abs_x = max(max_abs_x, px)
+            max_abs_y = max(max_abs_y, py)
+        required = max(required, max(2.0 * max_abs_x, 2.0 * max_abs_y * aspect))
     return max(required * pad, 1e-3)
 
 
@@ -586,7 +632,7 @@ def compute_required_ortho_scale(coverage, x_track, y_track, aspect, padding):
 # ==================================================================
 
 def setup_world():
-    """Black background."""
+    """Neutral bright world, with most spatial cue coming from the checker ground."""
     world = bpy.context.scene.world
     if world is None:
         world = bpy.data.worlds.new("World")
@@ -602,8 +648,8 @@ def setup_world():
     bg.inputs["Strength"].default_value = CFG.world_strength
 
 
-def setup_camera(track_x0, track_y, track_z, ortho_scale, z_span):
-    """Orthographic camera parented to a tracking rig."""
+def setup_camera(track_x0, track_y, track_z, ortho_scale, scene_span, to_camera):
+    """Angled orthographic camera parented to a tracking rig."""
     rig = bpy.data.objects.new("CameraRig", None)
     bpy.context.collection.objects.link(rig)
     rig.location = Vector((track_x0, track_y, track_z))
@@ -618,25 +664,30 @@ def setup_camera(track_x0, track_y, track_z, ortho_scale, z_span):
     cam_data.sensor_fit = "HORIZONTAL"
     cam_data.ortho_scale = ortho_scale
 
-    cam_height = max(
-        CFG.camera_height_min,
-        z_span * CFG.camera_height_mult,
-        ortho_scale * 2.0,
+    cam_distance = max(
+        CFG.camera_distance_min,
+        scene_span * CFG.camera_distance_mult,
+        ortho_scale * 1.75,
     )
-    cam_obj.location = Vector((0.0, 0.0, cam_height))
-    cam_obj.rotation_euler = (0, 0, 0)
+    cam_obj.location = Vector(tuple(to_camera * cam_distance))
+    cam_obj.rotation_euler = (0.0, 0.0, 0.0)
+
+    track = cam_obj.constraints.new(type='TRACK_TO')
+    track.target = rig
+    track.track_axis = 'TRACK_NEGATIVE_Z'
+    track.up_axis = 'UP_Y'
 
     cam_data.clip_start = 0.01
-    cam_data.clip_end = max(1000.0, cam_height * 40.0)
+    cam_data.clip_end = max(1000.0, cam_distance * 80.0)
 
-    return rig, cam_obj, cam_height
+    return rig, cam_obj, cam_distance
 
 
-def setup_lights(rig, ortho_scale, cam_height):
+def setup_lights(rig, ortho_scale, cam_distance):
     """Three-point area-light rig that follows the camera rig."""
     spread = max(ortho_scale * CFG.light_spread, 3.0)
     base_size = max(ortho_scale * 0.75, 1.5)
-    light_z = max(cam_height * CFG.light_z_factor, spread * 1.2)
+    light_z = max(cam_distance * CFG.light_z_factor, spread * 1.2)
     energy_scale = max((ortho_scale / 6.0) ** 2, 0.35)
 
     def add_light(name, energy, color, size_factor, offset):
@@ -697,7 +748,7 @@ def create_reference_line(x_min, x_max, y_pos, z_pos):
 
 
 def create_checkerboard_background(x_min, x_max, y_min, y_max, z_pos):
-    """Subtle checkerboard plane to provide scene scale cues."""
+    """Opaque checkerboard ground plane in bright sober tones."""
     if not CFG.checkerboard_enable:
         return None
 
@@ -723,7 +774,7 @@ def create_checkerboard_background(x_min, x_max, y_min, y_max, z_pos):
     texcoord = nodes.new("ShaderNodeTexCoord")
     mapping = nodes.new("ShaderNodeMapping")
     checker = nodes.new("ShaderNodeTexChecker")
-    emission = nodes.new("ShaderNodeEmission")
+    bsdf = nodes.new("ShaderNodeBsdfPrincipled")
     out = nodes.new("ShaderNodeOutputMaterial")
 
     tile_size = max(span_x / max(CFG.checker_tiles_x, 2), 1e-3)
@@ -731,12 +782,14 @@ def create_checkerboard_background(x_min, x_max, y_min, y_max, z_pos):
     set_node_input(checker, "Color1", (*CFG.checker_color_a, 1.0))
     set_node_input(checker, "Color2", (*CFG.checker_color_b, 1.0))
     set_node_input(checker, "Scale", 1.0)
-    set_node_input(emission, "Strength", CFG.checker_emission)
+    set_node_input(bsdf, "Roughness", CFG.checker_roughness)
+    set_node_input(bsdf, ["Specular IOR Level", "Specular"], CFG.checker_specular)
+    set_node_input(bsdf, "Metallic", 0.0)
 
     links.new(texcoord.outputs["Generated"], mapping.inputs["Vector"])
     links.new(mapping.outputs["Vector"], checker.inputs["Vector"])
-    links.new(checker.outputs["Color"], emission.inputs["Color"])
-    links.new(emission.outputs["Emission"], out.inputs["Surface"])
+    links.new(checker.outputs["Color"], bsdf.inputs["Base Color"])
+    links.new(bsdf.outputs["BSDF"], out.inputs["Surface"])
 
     plane.data.materials.append(mat)
     return plane
@@ -749,7 +802,7 @@ def setup_render():
     scene.render.resolution_y = CFG.resolution[1]
     scene.render.resolution_percentage = 100
     scene.render.image_settings.file_format = "PNG"
-    scene.render.film_transparent = False   # render world background (black)
+    scene.render.film_transparent = False
     scene.render.use_motion_blur = False
 
     # Color management with gentle contrast for presentation frames.
@@ -816,33 +869,44 @@ def clone_stream(frames, meta):
     return frames_out, meta_out
 
 
-def render_all(input_dir, output_dir):
+def render_all(input_dir, output_dir, stream1="cube1", stream2="cube2"):
     os.makedirs(output_dir, exist_ok=True)
 
-    print("Loading fish 1..."); frames1, meta1 = load_frames(input_dir, "fish1", allow_missing=True)
-    print("Loading fish 2..."); frames2, meta2 = load_frames(input_dir, "fish2", allow_missing=True)
+    print(f"Loading {stream1}..."); frames1, meta1 = load_frames(input_dir, stream1, allow_missing=True)
+    print(f"Loading {stream2}..."); frames2, meta2 = load_frames(input_dir, stream2, allow_missing=True)
+    loaded1, loaded2 = stream1, stream2
+
+    # Compatibility fallback if the user reuses preprocess.py (fish1/fish2 folders).
+    if not frames1 and not frames2 and (stream1, stream2) == ("cube1", "cube2"):
+        print("  cube1/cube2 not found. Trying fish1/fish2 for compatibility.")
+        frames1, meta1 = load_frames(input_dir, "fish1", allow_missing=True)
+        frames2, meta2 = load_frames(input_dir, "fish2", allow_missing=True)
+        loaded1, loaded2 = "fish1", "fish2"
+
     if not frames1 and not frames2:
         raise FileNotFoundError(
-            f"No preprocessed data found in {input_dir}. Expected fish1/fish2 frame_*.npz files."
+            f"No preprocessed data found in {input_dir}. "
+            f"Expected {stream1}/{stream2} (or fish1/fish2 for compatibility) frame_*.npz files."
         )
     if not frames1 or not frames2:
         if CFG.allow_missing_stream:
             if not frames1:
-                print("  [fish1] missing: duplicating fish2 (--allow-missing-stream enabled).")
+                print(f"  [{loaded1}] missing: duplicating {loaded2} (--allow-missing-stream enabled).")
                 frames1, meta1 = clone_stream(frames2, meta2)
             if not frames2:
-                print("  [fish2] missing: duplicating fish1 (--allow-missing-stream enabled).")
+                print(f"  [{loaded2}] missing: duplicating {loaded1} (--allow-missing-stream enabled).")
                 frames2, meta2 = clone_stream(frames1, meta1)
         else:
-            missing = "fish1" if not frames1 else "fish2"
+            missing = loaded1 if not frames1 else loaded2
             raise FileNotFoundError(
                 f"Missing required stream '{missing}' in {input_dir}. "
-                "Run preprocess.py for both simulations, or pass --allow-missing-stream."
+                "Run preprocess_cubes_hex.py (or preprocess_cubes.py / preprocess.py), "
+                "or pass --allow-missing-stream."
             )
 
     n = min(len(frames1), len(frames2))
     if len(frames1) != len(frames2):
-        print(f"  Frame-count mismatch: fish1={len(frames1)} fish2={len(frames2)}; truncating to {n}")
+        print(f"  Frame-count mismatch: {loaded1}={len(frames1)} {loaded2}={len(frames2)}; truncating to {n}")
     print(f"Rendering {n} frames")
     if n == 0:
         return 0
@@ -851,26 +915,20 @@ def render_all(input_dir, output_dir):
     y_c1 = robust_center_y(frames1)
     y_c2 = robust_center_y(frames2)
 
-    if CFG.fish_y_gap <= 0:
+    if CFG.cube_y_gap <= 0:
         y_ext = max(robust_y_span(frames1), robust_y_span(frames2))
-        CFG.fish_y_gap = y_ext * 1.35
+        CFG.cube_y_gap = y_ext * 1.45
 
-    y_line1 = CFG.fish_y_gap / 2.0
-    y_line2 = -CFG.fish_y_gap / 2.0
+    y_line1 = CFG.cube_y_gap / 2.0
+    y_line2 = -CFG.cube_y_gap / 2.0
     y_off1 = y_line1 - y_c1
     y_off2 = y_line2 - y_c2
-    print(f"  Lane gap: {CFG.fish_y_gap:.4f}")
-    print(f"  Y offsets: fish1={y_off1:+.4f}  fish2={y_off2:+.4f}")
+    print(f"  Lane gap: {CFG.cube_y_gap:.4f}")
+    print(f"  Y offsets: cube1={y_off1:+.4f}  cube2={y_off2:+.4f}")
 
     coverage = compute_frame_coverage(frames1, frames2, y_off1, y_off2, n)
     track_z = (coverage["z_min"] + coverage["z_max"]) * 0.5
-    z_checker = coverage["z_min"] - max(0.05, CFG.checker_z_offset * coverage["z_span"])
-    # Keep guide lines slightly above fish so they remain visible.
-    z_line = coverage["z_max"] + max(0.02, coverage["z_span"] * 0.01)
-
-    if abs(y_line1 - y_line2) < 1e-6:
-        # Keep two distinct guides even if user forces zero lane gap.
-        y_line2 -= max(0.05, coverage["ortho_scale"] * 0.03)
+    z_ground = coverage["z_min"] - max(0.02, CFG.checker_z_offset * coverage["z_span"])
 
     aspect = CFG.resolution[0] / CFG.resolution[1]
     if CFG.camera_follow:
@@ -884,62 +942,70 @@ def render_all(input_dir, output_dir):
         y_track = [y_fixed] * n
         camera_mode = "fixed"
 
+    to_camera, cam_right, cam_up = camera_basis(
+        CFG.camera_elevation_deg, CFG.camera_azimuth_deg
+    )
     camera_ortho = max(
         coverage["ortho_scale"],
-        compute_required_ortho_scale(
-            coverage, x_track, y_track, aspect, CFG.ortho_padding
+        compute_required_ortho_scale_angled(
+            coverage, x_track, y_track, track_z, cam_right, cam_up, aspect, CFG.ortho_padding
         ),
     )
 
-    cam_half_x = 0.5 * camera_ortho
-    cam_half_y = cam_half_x / aspect
-    cover = max(CFG.checker_cover_scale, 1.0)
-    bg_half_x = cam_half_x * cover
-    bg_half_y = cam_half_y * cover
-    bg_x_min = min(x_track) - bg_half_x
-    bg_x_max = max(x_track) + bg_half_x
-    bg_y_min = min(y_track) - bg_half_y
-    bg_y_max = max(y_track) + bg_half_y
+    span_xy = max(
+        coverage["x_max"] - coverage["x_min"],
+        coverage["y_max"] - coverage["y_min"],
+        camera_ortho,
+        1e-3,
+    )
+    ground_pad = span_xy * max(CFG.checker_cover_scale, 1.0)
+    bg_x_min = min(x_track) - ground_pad
+    bg_x_max = max(x_track) + ground_pad
+    bg_y_min = min(y_track) - ground_pad
+    bg_y_max = max(y_track) + ground_pad
 
     print(f"  Camera mode: {camera_mode}")
+    print(f"  Camera angle: elevation={CFG.camera_elevation_deg:.1f}° azimuth={CFG.camera_azimuth_deg:.1f}°")
     print(f"  Ortho scale: {camera_ortho:.3f}")
     print(f"  Trajectory X: {coverage['x_min']:.3f} → {coverage['x_max']:.3f}")
-    print(f"  Color blending: {CFG.color_blend_iters} iterations")
-    print(f"  Background: {'checkerboard' if CFG.checkerboard_enable else 'black'}")
+    print(f"  Color blending: iters={CFG.color_blend_iters} self_weight={CFG.color_blend_self_weight}")
+    print(f"  Ground: {'checkerboard' if CFG.checkerboard_enable else 'none'}")
 
     # ── Scene ─────────────────────────────────────────────────
     clear_scene()
     setup_world()
     setup_render()
-    rig, _cam, cam_height = setup_camera(
-        x_track[0], y_track[0], track_z, camera_ortho, coverage["z_span"],
+    scene_span = max(
+        coverage["x_max"] - coverage["x_min"],
+        coverage["y_max"] - coverage["y_min"],
+        coverage["z_span"],
+        1e-3,
     )
-    setup_lights(rig, camera_ortho, cam_height)
+    rig, _cam, cam_distance = setup_camera(
+        x_track[0], y_track[0], track_z, camera_ortho, scene_span, to_camera,
+    )
+    setup_lights(rig, camera_ortho, cam_distance)
     create_checkerboard_background(
         bg_x_min, bg_x_max,
         bg_y_min, bg_y_max,
-        z_checker,
+        z_ground,
     )
 
-    # Reference lines
-    create_reference_line(coverage["x_min"], coverage["x_max"], y_line1, z_line)
-    create_reference_line(coverage["x_min"], coverage["x_max"], y_line2, z_line)
-
     # Materials
-    mats1 = build_materials(CFG.theme_fish1, "fish1")
-    mats2 = build_materials(CFG.theme_fish2, "fish2")
+    mats1 = build_materials(CFG.theme_cube1, "cube1")
+    mats2 = build_materials(CFG.theme_cube2, "cube2")
 
     # Initial meshes
     f1 = frames1[0]; f2 = frames2[0]
     v1 = f1["vertices"].copy(); v1[:, 1] += y_off1
     v2 = f2["vertices"].copy(); v2[:, 1] += y_off2
 
-    obj1 = mesh_from_arrays("Fish1", v1, f1["triangles"])
+    obj1 = mesh_from_arrays("Cube1", v1, f1["triangles"])
     ensure_outward_normals(obj1)
     assign_materials(obj1, f1["labels"], mats1)
     apply_surface_shading(obj1)
 
-    obj2 = mesh_from_arrays("Fish2", v2, f2["triangles"])
+    obj2 = mesh_from_arrays("Cube2", v2, f2["triangles"])
     ensure_outward_normals(obj2)
     assign_materials(obj2, f2["labels"], mats2)
     apply_surface_shading(obj2)
@@ -1003,19 +1069,23 @@ def parse_args():
     ap = argparse.ArgumentParser()
     ap.add_argument("--input", required=True)
     ap.add_argument("--output", required=True)
+    ap.add_argument("--stream1", default="cube1")
+    ap.add_argument("--stream2", default="cube2")
     ap.add_argument("--resolution", type=int, nargs=2, default=None)
     ap.add_argument("--samples", type=int, default=None)
     ap.add_argument("--fps", type=int, default=None)
     ap.add_argument("--engine", choices=["CYCLES","BLENDER_EEVEE_NEXT","BLENDER_EEVEE"], default=None)
     ap.add_argument("--no-video", action="store_true")
     ap.add_argument("--y-gap", type=float, default=None)
+    ap.add_argument("--camera-follow", action="store_true")
     ap.add_argument("--allow-missing-stream", action="store_true")
     args = ap.parse_args(argv)
     if args.resolution is not None: CFG.resolution = tuple(args.resolution)
     if args.samples is not None:    CFG.render_samples = args.samples
     if args.fps is not None:        CFG.fps = args.fps
     if args.engine is not None:     CFG.render_engine = args.engine
-    if args.y_gap is not None:      CFG.fish_y_gap = args.y_gap
+    if args.y_gap is not None:      CFG.cube_y_gap = args.y_gap
+    CFG.camera_follow = bool(args.camera_follow)
     CFG.allow_missing_stream = bool(args.allow_missing_stream)
     return args
 
@@ -1028,7 +1098,7 @@ if __name__ == "__main__":
         print(f"  Output: {args.output}")
         print(f"  {CFG.resolution[0]}×{CFG.resolution[1]}  samples={CFG.render_samples}")
         print("=" * 50)
-        n = render_all(args.input, args.output)
+        n = render_all(args.input, args.output, stream1=args.stream1, stream2=args.stream2)
         if not args.no_video and n > 0:
             make_video(args.output, n)
         print("\nDone!")

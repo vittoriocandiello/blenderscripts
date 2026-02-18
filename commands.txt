@@ -7,3 +7,14 @@ blender --background --python render_blender.py -- \
 blender --background --python render_blender.py -- \
     --input preprocessed --output renders_pub \
     --resolution 1920 1080 --samples 128
+
+python preprocess_cubes_hex.py \
+    --pvd1 <cube_sim_1.pvd> \
+    --pvd2 <cube_sim_2.pvd> \
+    --out preprocessed_cubes
+
+blender --background --python render_blender_cubes.py -- \
+    --input preprocessed_cubes \
+    --output renders_cubes \
+    --resolution 1920 1080 \
+    --samples 128
