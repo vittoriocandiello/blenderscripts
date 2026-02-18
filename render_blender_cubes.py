@@ -33,23 +33,23 @@ class Settings:
     fps             = 60
 
     # ── Camera (orthographic at a jump-friendly angle) ────────
-    ortho_padding       = 1.16
+    ortho_padding       = 1.20
     camera_follow       = False
     camera_track_alpha  = 0.75
-    camera_elevation_deg = 30.0   # requested: ~30° above ground plane
-    camera_azimuth_deg   = 212.0  # rotated 180° around Z from previous 32°
+    camera_elevation_deg = 18.0   # lower camera for stronger low-angle look
+    camera_azimuth_deg   = 224.0
     camera_distance_min  = 9.0
     camera_distance_mult = 2.5
 
     # ── Background ────────────────────────────────────────────
-    world_color      = (0.95, 0.97, 1.0)
-    world_strength   = 0.35
+    world_color      = (0.0, 0.0, 0.0)
+    world_strength   = 0.0
     checkerboard_enable = True
     checker_tiles_x  = 18
     checker_margin   = 0.25
     checker_cover_scale = 1.45
-    checker_color_a  = (0.88, 0.90, 0.93)
-    checker_color_b  = (0.78, 0.82, 0.88)
+    checker_color_a  = (0.0, 0.0, 0.0)
+    checker_color_b  = (0.13, 0.13, 0.13)
     checker_roughness = 0.92
     checker_specular  = 0.06
     checker_z_offset = 0.05

@@ -40,15 +40,15 @@ class Settings:
     camera_height_mult = 2.3
 
     # ── Background ────────────────────────────────────────────
-    world_color      = (0.02, 0.02, 0.02)
+    world_color      = (0.0, 0.0, 0.0)
     world_strength   = 0.0
     checkerboard_enable = True
     checker_tiles_x  = 22
     checker_margin   = 0.20
     checker_cover_scale = 1.30
-    checker_color_a  = (0.05, 0.05, 0.05)   # dark tile
-    checker_color_b  = (0.02, 0.02, 0.02)   # darker tile
-    checker_emission = 0.0
+    checker_color_a  = (0.0, 0.0, 0.0)      # black tile
+    checker_color_b  = (0.12, 0.12, 0.12)   # dark gray tile
+    checker_emission = 1.0
     checker_z_offset = 0.10
 
     # ── Lighting ──────────────────────────────────────────────
@@ -77,7 +77,7 @@ class Settings:
         "name": "StudioBlue",
         "default": (0.064, 0.176, 0.60),    # body
         0: (0.064, 0.176, 0.60),            # body (label 0)
-        1: (0.45, 0.08, 0.10),              # deep crimson
+        1: (0.98, 0.86, 0.22),              # high-contrast golden yellow
         2: (0.08, 0.32, 0.28),              # dark teal
         3: (0.40, 0.28, 0.04),              # dark amber
         4: (0.10, 0.18, 0.45),              # dark periwinkle
@@ -92,7 +92,7 @@ class Settings:
         "name": "StudioBlue",
         "default": (0.064, 0.176, 0.60),
         0: (0.064, 0.176, 0.60),
-        1: (0.45, 0.08, 0.10),
+        1: (0.98, 0.86, 0.22),
         2: (0.08, 0.32, 0.28),
         3: (0.40, 0.28, 0.04),
         4: (0.10, 0.18, 0.45),
