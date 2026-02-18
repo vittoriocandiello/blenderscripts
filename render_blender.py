@@ -76,31 +76,33 @@ class Settings:
     theme_fish1 = {
         "name": "StudioBlue",
         "default": (0.064, 0.176, 0.60),    # body
-        0: (0.064, 0.176, 0.60),            # body (label 0)
-        1: (0.98, 0.86, 0.22),              # high-contrast golden yellow
-        2: (0.08, 0.32, 0.28),              # dark teal
+        0: (0.00, 0.00, 0.40),              # body (label 0)
+        1: (0.98, 0.66, 0.22),              # high-contrast golden yellow
+        2: (0.45, 0.08, 0.10),              # red
         3: (0.40, 0.28, 0.04),              # dark amber
         4: (0.10, 0.18, 0.45),              # dark periwinkle
         5: (0.18, 0.34, 0.08),              # dark olive green
-        6: (0.26, 0.10, 0.38),              # deep violet
-        7: (0.42, 0.18, 0.06),              # dark burnt orange
+        6: (0.08, 0.32, 0.28),              # dark teal
+        7: (0.26, 0.10, 0.38),              # deep violet
         8: (0.08, 0.30, 0.18),              # dark forest green
         9: (0.38, 0.08, 0.24),              # deep rose
+        10: (0.42, 0.18, 0.06),             # dark burnt orange
     }
 
     theme_fish2 = {
         "name": "StudioBlue",
         "default": (0.064, 0.176, 0.60),
-        0: (0.064, 0.176, 0.60),
-        1: (0.98, 0.86, 0.22),
-        2: (0.08, 0.32, 0.28),
-        3: (0.40, 0.28, 0.04),
-        4: (0.10, 0.18, 0.45),
-        5: (0.18, 0.34, 0.08),
-        6: (0.26, 0.10, 0.38),
-        7: (0.42, 0.18, 0.06),
-        8: (0.08, 0.30, 0.18),
-        9: (0.38, 0.08, 0.24),
+        0: (0.00, 0.00, 0.40),              # body (label 0)
+        1: (0.98, 0.66, 0.22),              # high-contrast golden yellow
+        2: (0.45, 0.08, 0.10),              # red
+        3: (0.40, 0.28, 0.04),              # dark amber
+        4: (0.10, 0.18, 0.45),              # dark periwinkle
+        5: (0.18, 0.34, 0.08),              # dark olive green
+        6: (0.08, 0.32, 0.28),              # dark teal
+        7: (0.26, 0.10, 0.38),              # deep violet
+        8: (0.08, 0.30, 0.18),              # dark forest green
+        9: (0.38, 0.08, 0.24),              # deep rose
+        10: (0.42, 0.18, 0.06),             # dark burnt orange
     }
 
     # ── Material ──────────────────────────────────────────────

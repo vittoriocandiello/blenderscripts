@@ -45,11 +45,11 @@ class Settings:
     world_color      = (0.0, 0.0, 0.0)
     world_strength   = 0.0
     checkerboard_enable = True
-    checker_tiles_x  = 18
+    checker_tiles_x  = 14
     checker_margin   = 0.25
     checker_cover_scale = 1.45
     checker_color_a  = (0.0, 0.0, 0.0)
-    checker_color_b  = (0.13, 0.13, 0.13)
+    checker_color_b  = (0.10, 0.10, 0.10)
     checker_roughness = 0.92
     checker_specular  = 0.06
     checker_z_offset = 0.05
@@ -80,7 +80,7 @@ class Settings:
     theme_cube1 = {
         "name": "StudioBlue",
         "default": (0.064, 0.176, 0.60),
-        0: (0.064, 0.176, 0.60),
+        0: (0.00, 0.00, 0.40),              # body (label 0)
         1: (0.45, 0.08, 0.10),
         2: (0.08, 0.32, 0.28),
         3: (0.40, 0.28, 0.04),
@@ -95,7 +95,7 @@ class Settings:
     theme_cube2 = {
         "name": "StudioBlue",
         "default": (0.064, 0.176, 0.60),
-        0: (0.064, 0.176, 0.60),
+        0: (0.00, 0.00, 0.40),              # body (label 0)
         1: (0.45, 0.08, 0.10),
         2: (0.08, 0.32, 0.28),
         3: (0.40, 0.28, 0.04),
