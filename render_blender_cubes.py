@@ -33,7 +33,7 @@ class Settings:
     fps             = 60
 
     # ── Camera (orthographic at a jump-friendly angle) ────────
-    ortho_padding       = 1.20
+    ortho_padding       = 1.14
     camera_follow       = False
     camera_track_alpha  = 0.75
     camera_elevation_deg = 18.0   # lower camera for stronger low-angle look
@@ -45,31 +45,30 @@ class Settings:
     world_color      = (0.0, 0.0, 0.0)
     world_strength   = 0.0
     checkerboard_enable = True
-    checker_tiles_x  = 14
-    checker_margin   = 0.25
-    checker_cover_scale = 1.45
+    checker_tiles_x  = 22
+    checker_margin   = 0.20
+    checker_cover_scale = 1.30
     checker_color_a  = (0.0, 0.0, 0.0)
-    checker_color_b  = (0.10, 0.10, 0.10)
-    checker_roughness = 0.92
-    checker_specular  = 0.06
-    checker_z_offset = 0.05
+    checker_color_b  = (0.22, 0.22, 0.22)
+    checker_emission = 1.0
+    checker_z_offset = 0.10
 
     # ── Lighting ──────────────────────────────────────────────
     # Three-point area rig (parented to camera rig).
-    key_energy       = 430.0
-    key_color        = (1.0, 0.97, 0.94)
+    key_energy       = 520.0
+    key_color        = (1.0, 0.95, 0.90)
     key_size_factor  = 0.55
 
-    fill_energy      = 220.0
-    fill_color       = (0.90, 0.95, 1.0)
+    fill_energy      = 130.0
+    fill_color       = (0.90, 0.93, 1.0)
     fill_size_factor = 0.50
 
-    rim_energy       = 180.0
-    rim_color        = (0.96, 0.98, 1.0)
+    rim_energy       = 120.0
+    rim_color        = (1.0, 0.97, 0.94)
     rim_size_factor  = 0.45
 
-    light_spread     = 1.12
-    light_z_factor   = 0.72
+    light_spread     = 1.05
+    light_z_factor   = 0.86
 
     # ── Cube layout ───────────────────────────────────────────
     cube_y_gap      = 0.0       # 0 = auto from stream extent
@@ -79,32 +78,34 @@ class Settings:
     # Shared palette between both cubes for direct material comparison.
     theme_cube1 = {
         "name": "StudioBlue",
-        "default": (0.064, 0.176, 0.60),
-        0: (0.00, 0.00, 0.40),              # body (label 0)
-        1: (0.45, 0.08, 0.10),
-        2: (0.08, 0.32, 0.28),
-        3: (0.40, 0.28, 0.04),
-        4: (0.10, 0.18, 0.45),
+        "default": (0.064, 0.176, 0.60),    # body
+        0: (0.12, 0.20, 0.88),              # light blue
+        1: (0.45, 0.08, 0.10),              # red
+        2: (0.45, 0.08, 0.10),              # red
+        3: (0.98, 0.66, 0.22),              # high-contrast golden yellow
+        4: (0.31, 0.10, 0.38),              # deep violet
         5: (0.18, 0.34, 0.08),
-        6: (0.26, 0.10, 0.38),
-        7: (0.42, 0.18, 0.06),
+        6: (0.08, 0.32, 0.28),
+        7: (0.40, 0.28, 0.04),
         8: (0.08, 0.30, 0.18),
         9: (0.38, 0.08, 0.24),
+        10: (0.42, 0.18, 0.06),
     }
 
     theme_cube2 = {
         "name": "StudioBlue",
         "default": (0.064, 0.176, 0.60),
-        0: (0.00, 0.00, 0.40),              # body (label 0)
+        0: (0.12, 0.20, 0.88),
         1: (0.45, 0.08, 0.10),
-        2: (0.08, 0.32, 0.28),
-        3: (0.40, 0.28, 0.04),
-        4: (0.10, 0.18, 0.45),
+        2: (0.45, 0.08, 0.10),
+        3: (0.98, 0.66, 0.22),
+        4: (0.31, 0.10, 0.38),
         5: (0.18, 0.34, 0.08),
-        6: (0.26, 0.10, 0.38),
-        7: (0.42, 0.18, 0.06),
+        6: (0.08, 0.32, 0.28),
+        7: (0.40, 0.28, 0.04),
         8: (0.08, 0.30, 0.18),
         9: (0.38, 0.08, 0.24),
+        10: (0.42, 0.18, 0.06),
     }
 
     # ── Material ──────────────────────────────────────────────
@@ -114,18 +115,18 @@ class Settings:
     emission_body   = 0.005
     emission_label  = 0.035
     color_attribute_name = "LabelColor"
-    # Keep smoothing but weaker than fish setup to preserve material changes.
     color_blend_iters    = 1
-    color_blend_self_weight = 6.0
-    auto_smooth_angle_deg = 30.0
+    color_blend_self_weight = 10.0
+    boundary_weight      = 0.003  # less blending across muscle/non-muscle boundaries
+    auto_smooth_angle_deg = 48.0
     # Kept for compatibility with helper utilities not used in cube scene.
-    line_color      = (0.80, 0.86, 0.95)
-    line_thickness  = 0.004
-    line_extend     = 0.24
+    line_color      = (0.0, 0.0, 0.0)
+    line_thickness  = 0.0
+    line_extend     = 0.0
     line_emission   = 0.0
 
     # ── Color management ──────────────────────────────────────
-    exposure        = 0.08
+    exposure        = 0.0
     gamma           = 1.0
 
     # ── Video ─────────────────────────────────────────────────
@@ -278,6 +279,15 @@ def set_node_input(node, name_or_names, value):
     return False
 
 
+def to_rgba(color):
+    c = tuple(color)
+    if len(c) == 4:
+        return c
+    if len(c) == 3:
+        return (c[0], c[1], c[2], 1.0)
+    raise ValueError(f"Expected RGB or RGBA color, got length {len(c)}: {c}")
+
+
 def create_material(name, emission_strength):
     """Surface material driven by per-vertex label colors."""
     mat = bpy.data.materials.new(name=name)
@@ -345,25 +355,69 @@ def triangles_to_edges(triangles):
     return np.unique(edges, axis=0)
 
 
-def blend_vertex_colors(vertex_colors, triangles, iters, self_weight):
+def _build_edge_weights(triangles, labels, n_verts, boundary_weight):
+    tri = np.asarray(triangles, dtype=np.int64)
+    lab = np.asarray(labels, dtype=np.int32)
+
+    he_v0 = np.concatenate([tri[:, 0], tri[:, 1], tri[:, 2]])
+    he_v1 = np.concatenate([tri[:, 1], tri[:, 2], tri[:, 0]])
+    he_lab = np.tile(lab, 3)
+
+    swap = he_v0 > he_v1
+    he_v0_s = np.where(swap, he_v1, he_v0)
+    he_v1_s = np.where(swap, he_v0, he_v1)
+
+    max_v = n_verts + 1
+    edge_key = he_v0_s * max_v + he_v1_s
+
+    order = np.argsort(edge_key)
+    ek_sorted = edge_key[order]
+    lab_sorted = he_lab[order]
+    v0_sorted = he_v0_s[order]
+    v1_sorted = he_v1_s[order]
+
+    unique_mask = np.empty(len(ek_sorted), dtype=bool)
+    unique_mask[0] = True
+    unique_mask[1:] = ek_sorted[1:] != ek_sorted[:-1]
+    u_idx = np.where(unique_mask)[0]
+
+    u_v0 = v0_sorted[u_idx]
+    u_v1 = v1_sorted[u_idx]
+
+    next_idx = np.minimum(u_idx + 1, len(ek_sorted) - 1)
+    is_interior = (ek_sorted[next_idx] == ek_sorted[u_idx])
+    lab_a = lab_sorted[u_idx]
+    lab_b = lab_sorted[next_idx]
+    same_label = (~is_interior) | (lab_a == lab_b)
+
+    bw = float(np.clip(boundary_weight, 0.0, 1.0))
+    edge_w = np.where(same_label, 1.0, bw).astype(np.float32)
+    return u_v0, u_v1, edge_w
+
+
+def blend_vertex_colors_boundary_aware(vertex_colors, triangles, labels, iters, self_weight, boundary_weight):
     if iters <= 0 or len(vertex_colors) == 0:
-        return vertex_colors
-    edges = triangles_to_edges(triangles)
-    if len(edges) == 0:
-        return vertex_colors
+        return vertex_colors.copy()
+
+    n_verts = len(vertex_colors)
+    u_v0, u_v1, edge_w = _build_edge_weights(triangles, labels, n_verts, boundary_weight)
+    if len(u_v0) == 0:
+        return vertex_colors.copy()
 
     cur = vertex_colors.astype(np.float32, copy=True)
     sw = float(max(self_weight, 0.0))
+    ew3 = edge_w[:, None]
+
     for _ in range(int(iters)):
         nb_sum = np.zeros_like(cur)
-        deg = np.zeros((len(cur), 1), dtype=np.float32)
+        w_sum = np.zeros((n_verts, 1), dtype=np.float32)
 
-        np.add.at(nb_sum, edges[:, 0], cur[edges[:, 1]])
-        np.add.at(nb_sum, edges[:, 1], cur[edges[:, 0]])
-        np.add.at(deg[:, 0], edges[:, 0], 1.0)
-        np.add.at(deg[:, 0], edges[:, 1], 1.0)
+        np.add.at(nb_sum, u_v0, cur[u_v1] * ew3)
+        np.add.at(nb_sum, u_v1, cur[u_v0] * ew3)
+        np.add.at(w_sum[:, 0], u_v0, edge_w)
+        np.add.at(w_sum[:, 0], u_v1, edge_w)
 
-        nb_avg = nb_sum / np.maximum(deg, 1.0)
+        nb_avg = nb_sum / np.maximum(w_sum, 1e-8)
         cur = (sw * cur + nb_avg) / (sw + 1.0)
 
     return np.clip(cur, 0.0, 1.0)
@@ -422,7 +476,10 @@ def assign_materials(obj, labels, materials_dict):
         np.add.at(vcols, idx, face_colors)
         np.add.at(counts[:, 0], idx, 1.0)
     vcols = vcols / np.maximum(counts, 1.0)
-    vcols = blend_vertex_colors(vcols, triangles, CFG.color_blend_iters, CFG.color_blend_self_weight)
+    vcols = blend_vertex_colors_boundary_aware(
+        vcols, triangles, labels,
+        CFG.color_blend_iters, CFG.color_blend_self_weight, CFG.boundary_weight
+    )
     set_mesh_color_attribute(mesh, vcols, CFG.color_attribute_name)
 
 
@@ -740,7 +797,7 @@ def create_reference_line(x_min, x_max, y_pos, z_pos):
         nodes.remove(n)
     out = nodes.new("ShaderNodeOutputMaterial")
     em = nodes.new("ShaderNodeEmission")
-    set_node_input(em, "Color", (*CFG.line_color, 1.0))
+    set_node_input(em, "Color", to_rgba(CFG.line_color))
     set_node_input(em, "Strength", CFG.line_emission)
     links.new(em.outputs["Emission"], out.inputs["Surface"])
     line.data.materials.append(mat)
@@ -748,7 +805,7 @@ def create_reference_line(x_min, x_max, y_pos, z_pos):
 
 
 def create_checkerboard_background(x_min, x_max, y_min, y_max, z_pos):
-    """Opaque checkerboard ground plane in bright sober tones."""
+    """Checkerboard ground plane."""
     if not CFG.checkerboard_enable:
         return None
 
@@ -774,22 +831,20 @@ def create_checkerboard_background(x_min, x_max, y_min, y_max, z_pos):
     texcoord = nodes.new("ShaderNodeTexCoord")
     mapping = nodes.new("ShaderNodeMapping")
     checker = nodes.new("ShaderNodeTexChecker")
-    bsdf = nodes.new("ShaderNodeBsdfPrincipled")
+    emission = nodes.new("ShaderNodeEmission")
     out = nodes.new("ShaderNodeOutputMaterial")
 
     tile_size = max(span_x / max(CFG.checker_tiles_x, 2), 1e-3)
     set_node_input(mapping, "Scale", (ext_x / tile_size, ext_y / tile_size, 1.0))
-    set_node_input(checker, "Color1", (*CFG.checker_color_a, 1.0))
-    set_node_input(checker, "Color2", (*CFG.checker_color_b, 1.0))
+    set_node_input(checker, "Color1", to_rgba(CFG.checker_color_a))
+    set_node_input(checker, "Color2", to_rgba(CFG.checker_color_b))
     set_node_input(checker, "Scale", 1.0)
-    set_node_input(bsdf, "Roughness", CFG.checker_roughness)
-    set_node_input(bsdf, ["Specular IOR Level", "Specular"], CFG.checker_specular)
-    set_node_input(bsdf, "Metallic", 0.0)
+    set_node_input(emission, "Strength", CFG.checker_emission)
 
     links.new(texcoord.outputs["Generated"], mapping.inputs["Vector"])
     links.new(mapping.outputs["Vector"], checker.inputs["Vector"])
-    links.new(checker.outputs["Color"], bsdf.inputs["Base Color"])
-    links.new(bsdf.outputs["BSDF"], out.inputs["Surface"])
+    links.new(checker.outputs["Color"], emission.inputs["Color"])
+    links.new(emission.outputs["Emission"], out.inputs["Surface"])
 
     plane.data.materials.append(mat)
     return plane
@@ -968,7 +1023,8 @@ def render_all(input_dir, output_dir, stream1="cube1", stream2="cube2"):
     print(f"  Camera angle: elevation={CFG.camera_elevation_deg:.1f}° azimuth={CFG.camera_azimuth_deg:.1f}°")
     print(f"  Ortho scale: {camera_ortho:.3f}")
     print(f"  Trajectory X: {coverage['x_min']:.3f} → {coverage['x_max']:.3f}")
-    print(f"  Color blending: iters={CFG.color_blend_iters} self_weight={CFG.color_blend_self_weight}")
+    print(f"  Color blending: iters={CFG.color_blend_iters} "
+          f"self_weight={CFG.color_blend_self_weight} boundary_w={CFG.boundary_weight}")
     print(f"  Ground: {'checkerboard' if CFG.checkerboard_enable else 'none'}")
 
     # ── Scene ─────────────────────────────────────────────────
@@ -1078,6 +1134,12 @@ def parse_args():
     ap.add_argument("--no-video", action="store_true")
     ap.add_argument("--y-gap", type=float, default=None)
     ap.add_argument("--camera-follow", action="store_true")
+    ap.add_argument("--blend-iters", type=int, default=None,
+                    help=f"Color smoothing iterations (default: {CFG.color_blend_iters}).")
+    ap.add_argument("--blend-self-weight", type=float, default=None,
+                    help=f"Smoothing self-retention weight (default: {CFG.color_blend_self_weight}).")
+    ap.add_argument("--boundary-weight", type=float, default=None,
+                    help=f"Cross-label smoothing weight (default: {CFG.boundary_weight}).")
     ap.add_argument("--allow-missing-stream", action="store_true")
     args = ap.parse_args(argv)
     if args.resolution is not None: CFG.resolution = tuple(args.resolution)
@@ -1085,6 +1147,9 @@ def parse_args():
     if args.fps is not None:        CFG.fps = args.fps
     if args.engine is not None:     CFG.render_engine = args.engine
     if args.y_gap is not None:      CFG.cube_y_gap = args.y_gap
+    if args.blend_iters is not None:       CFG.color_blend_iters = args.blend_iters
+    if args.blend_self_weight is not None: CFG.color_blend_self_weight = args.blend_self_weight
+    if args.boundary_weight is not None:   CFG.boundary_weight = args.boundary_weight
     CFG.camera_follow = bool(args.camera_follow)
     CFG.allow_missing_stream = bool(args.allow_missing_stream)
     return args

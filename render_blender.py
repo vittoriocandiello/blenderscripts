@@ -11,6 +11,13 @@ Usage:
     blender --background --python render_blender.py -- \
         --input preprocessed/ --output renders/ \
         --resolution 1920 1080 --samples 128
+
+Smoothing controls:
+    --blend-iters 5          # number of diffusion iterations (0 = off)
+    --blend-self-weight 0.1  # how much a vertex keeps its own color vs neighbors
+    --boundary-weight 0.1    # cross-label edge weight (0 = hard boundary, 1 = ignore labels)
+    --smooth-shading          # enable smooth shading on fish meshes
+    --color-domain vertex     # 'vertex' for smooth gradients, 'face' for flat per-triangle
 """
 
 import os, sys, glob, argparse, subprocess, math, tempfile
@@ -47,7 +54,7 @@ class Settings:
     checker_margin   = 0.20
     checker_cover_scale = 1.30
     checker_color_a  = (0.0, 0.0, 0.0)      # black tile
-    checker_color_b  = (0.12, 0.12, 0.12)   # dark gray tile
+    checker_color_b  = (0.22, 0.22, 0.22)   # dark gray tile
     checker_emission = 1.0
     checker_z_offset = 0.10
 
@@ -71,19 +78,17 @@ class Settings:
     fish_y_gap      = 0.0
 
     # ── Color themes ──────────────────────────────────────────
-    # Default body: deep saturated blue.
-    # Muscle labels: clearly darker and distinct from the body color.
     theme_fish1 = {
         "name": "StudioBlue",
         "default": (0.064, 0.176, 0.60),    # body
-        0: (0.00, 0.00, 0.40),              # body (label 0)
-        1: (0.98, 0.66, 0.22),              # high-contrast golden yellow
+        0: (0.12, 0.20, 0.88),              # light blue
+        1: (0.45, 0.08, 0.10),              # red
         2: (0.45, 0.08, 0.10),              # red
-        3: (0.40, 0.28, 0.04),              # dark amber
-        4: (0.10, 0.18, 0.45),              # dark periwinkle
+        3: (0.98, 0.66, 0.22),              # high-contrast golden yellow
+        4: (0.31, 0.10, 0.38),              # deep violet
         5: (0.18, 0.34, 0.08),              # dark olive green
         6: (0.08, 0.32, 0.28),              # dark teal
-        7: (0.26, 0.10, 0.38),              # deep violet
+        7: (0.40, 0.28, 0.04),              # dark amber
         8: (0.08, 0.30, 0.18),              # dark forest green
         9: (0.38, 0.08, 0.24),              # deep rose
         10: (0.42, 0.18, 0.06),             # dark burnt orange
@@ -92,28 +97,34 @@ class Settings:
     theme_fish2 = {
         "name": "StudioBlue",
         "default": (0.064, 0.176, 0.60),
-        0: (0.00, 0.00, 0.40),              # body (label 0)
-        1: (0.98, 0.66, 0.22),              # high-contrast golden yellow
-        2: (0.45, 0.08, 0.10),              # red
-        3: (0.40, 0.28, 0.04),              # dark amber
-        4: (0.10, 0.18, 0.45),              # dark periwinkle
-        5: (0.18, 0.34, 0.08),              # dark olive green
-        6: (0.08, 0.32, 0.28),              # dark teal
-        7: (0.26, 0.10, 0.38),              # deep violet
-        8: (0.08, 0.30, 0.18),              # dark forest green
-        9: (0.38, 0.08, 0.24),              # deep rose
-        10: (0.42, 0.18, 0.06),             # dark burnt orange
+        0: (0.12, 0.20, 0.88),
+        1: (0.45, 0.08, 0.10),
+        2: (0.45, 0.08, 0.10),
+        3: (0.98, 0.66, 0.22),
+        4: (0.31, 0.10, 0.38),
+        5: (0.18, 0.34, 0.08),
+        6: (0.08, 0.32, 0.28),
+        7: (0.40, 0.28, 0.04),
+        8: (0.08, 0.30, 0.18),
+        9: (0.38, 0.08, 0.24),
+        10: (0.42, 0.18, 0.06),
     }
 
     # ── Material ──────────────────────────────────────────────
-    roughness       = 0.85      # matte silicone surface
-    specular        = 0.05      # near-zero reflectivity
+    roughness       = 0.85
+    specular        = 0.05
     metallic        = 0.0
-    emission_body   = 0.005     # faint body glow
-    emission_label  = 0.035     # subtle muscle highlight
+    emission_body   = 0.005
+    emission_label  = 0.035
     color_attribute_name = "LabelColor"
-    color_blend_iters    = 2
-    color_blend_self_weight = 2.5
+
+    # ── Smoothing controls ────────────────────────────────────
+    color_blend_iters      = 1      # diffusion iterations (0 = no smoothing)
+    color_blend_self_weight = 10.00  # vertex self-retention vs neighbor average
+    boundary_weight        = 0.01    # cross-label edge weight: 0=hard, 1=no distinction
+    color_domain           = "vertex"  # "vertex" for smooth gradients, "face" for flat
+    smooth_shading         = True   # mesh smooth shading
+    auto_smooth_angle      = 48.0   # degrees, for auto-smooth
 
     # ── Reference lines (invisible) ───────────────────────────
     line_color      = (0.0, 0.0, 0.0)
@@ -285,16 +296,14 @@ def to_rgba(color):
 
 
 def create_material(name, emission_strength):
-    """Surface material driven by per-vertex label colors."""
+    """Surface material driven by per-vertex/per-corner label colors."""
     mat = bpy.data.materials.new(name=name)
     mat.use_nodes = True
     nodes = mat.node_tree.nodes
     links = mat.node_tree.links
 
-    # Clear defaults
     for n in list(nodes): nodes.remove(n)
 
-    # Principled + emission, both fed by vertex-color attribute.
     output = nodes.new("ShaderNodeOutputMaterial")
     shader_add = nodes.new("ShaderNodeAddShader")
     principled = nodes.new("ShaderNodeBsdfPrincipled")
@@ -351,64 +360,190 @@ def triangles_to_edges(triangles):
     return np.unique(edges, axis=0)
 
 
-def blend_vertex_colors(vertex_colors, triangles, iters, self_weight):
+# ------------------------------------------------------------------
+#  Vertex-color smoothing (boundary-aware Laplacian diffusion)
+# ------------------------------------------------------------------
+
+def _build_edge_weights(triangles, labels, n_verts, boundary_weight):
+    """
+    Build unique edge list with weights: 1.0 for same-label edges,
+    `boundary_weight` for edges shared by faces with different labels.
+
+    Correctly handles boundary edges (shared by only one face).
+    """
+    tri = np.asarray(triangles, dtype=np.int64)
+    lab = np.asarray(labels, dtype=np.int32)
+    n_faces = len(tri)
+
+    # Each face contributes 3 directed half-edges
+    # half_edges[i] = (v_lo, v_hi, face_label)
+    he_v0 = np.concatenate([tri[:, 0], tri[:, 1], tri[:, 2]])
+    he_v1 = np.concatenate([tri[:, 1], tri[:, 2], tri[:, 0]])
+    he_lab = np.tile(lab, 3)
+
+    # Sort each edge so v_lo < v_hi
+    swap = he_v0 > he_v1
+    he_v0_s = np.where(swap, he_v1, he_v0)
+    he_v1_s = np.where(swap, he_v0, he_v1)
+
+    # Encode edge as single int for grouping
+    max_v = n_verts + 1
+    edge_key = he_v0_s * max_v + he_v1_s
+
+    # Sort by edge key to group half-edges belonging to the same edge
+    order = np.argsort(edge_key)
+    ek_sorted = edge_key[order]
+    lab_sorted = he_lab[order]
+    v0_sorted = he_v0_s[order]
+    v1_sorted = he_v1_s[order]
+
+    # Find unique edges
+    unique_mask = np.empty(len(ek_sorted), dtype=bool)
+    unique_mask[0] = True
+    unique_mask[1:] = ek_sorted[1:] != ek_sorted[:-1]
+    u_idx = np.where(unique_mask)[0]
+    n_unique = len(u_idx)
+
+    u_v0 = v0_sorted[u_idx]
+    u_v1 = v1_sorted[u_idx]
+
+    # Determine if edge is interior (shared by 2 faces) and whether labels match
+    # For each unique edge start, check if next half-edge belongs to same edge
+    # and whether labels differ.
+    next_idx = np.minimum(u_idx + 1, len(ek_sorted) - 1)
+    is_interior = (ek_sorted[next_idx] == ek_sorted[u_idx])  # True if 2+ half-edges
+    lab_a = lab_sorted[u_idx]
+    lab_b = lab_sorted[next_idx]
+    same_label = (~is_interior) | (lab_a == lab_b)  # boundary edges count as "same"
+
+    bw = float(np.clip(boundary_weight, 0.0, 1.0))
+    edge_w = np.where(same_label, 1.0, bw).astype(np.float32)
+
+    return u_v0, u_v1, edge_w
+
+
+def blend_vertex_colors_boundary_aware(vertex_colors, triangles, labels,
+                                        iters, self_weight, boundary_weight):
+    """
+    Laplacian diffusion of vertex colors with boundary-aware edge weights.
+
+    Parameters
+    ----------
+    vertex_colors : (V, 3) float32
+    triangles     : (F, 3) int
+    labels        : (F,) int   — per-face labels
+    iters         : int        — diffusion iterations; 0 = no-op
+    self_weight   : float      — how much a vertex retains its color vs neighbor avg
+    boundary_weight : float    — weight for edges crossing label boundaries
+                                 0.0 = hard boundary (no diffusion across)
+                                 1.0 = ignore labels entirely
+
+    Returns
+    -------
+    (V, 3) float32, clipped to [0, 1]
+    """
     if iters <= 0 or len(vertex_colors) == 0:
-        return vertex_colors
-    edges = triangles_to_edges(triangles)
-    if len(edges) == 0:
-        return vertex_colors
+        return vertex_colors.copy()
+
+    n_verts = len(vertex_colors)
+    u_v0, u_v1, edge_w = _build_edge_weights(triangles, labels, n_verts, boundary_weight)
+
+    if len(u_v0) == 0:
+        return vertex_colors.copy()
 
     cur = vertex_colors.astype(np.float32, copy=True)
     sw = float(max(self_weight, 0.0))
+
+    ew3 = edge_w[:, None]  # (E, 1) for broadcasting against (E, 3) colors
+
     for _ in range(int(iters)):
         nb_sum = np.zeros_like(cur)
-        deg = np.zeros((len(cur), 1), dtype=np.float32)
+        w_sum = np.zeros((n_verts, 1), dtype=np.float32)
 
-        np.add.at(nb_sum, edges[:, 0], cur[edges[:, 1]])
-        np.add.at(nb_sum, edges[:, 1], cur[edges[:, 0]])
-        np.add.at(deg[:, 0], edges[:, 0], 1.0)
-        np.add.at(deg[:, 0], edges[:, 1], 1.0)
+        np.add.at(nb_sum, u_v0, cur[u_v1] * ew3)
+        np.add.at(nb_sum, u_v1, cur[u_v0] * ew3)
+        np.add.at(w_sum[:, 0], u_v0, edge_w)
+        np.add.at(w_sum[:, 0], u_v1, edge_w)
 
-        nb_avg = nb_sum / np.maximum(deg, 1.0)
+        nb_avg = nb_sum / np.maximum(w_sum, 1e-8)
         cur = (sw * cur + nb_avg) / (sw + 1.0)
 
     return np.clip(cur, 0.0, 1.0)
 
 
-def set_mesh_color_attribute(mesh, vertex_colors, attr_name):
-    if not hasattr(mesh, "color_attributes"):
-        return
+# ------------------------------------------------------------------
+#  Color attribute writing
+# ------------------------------------------------------------------
 
+def set_mesh_vertex_colors(mesh, vertex_colors, attr_name):
+    """
+    Write per-VERTEX colors into a POINT-domain color attribute.
+    Blender interpolates across faces automatically → smooth gradients.
+
+    vertex_colors : (V, 3) float32
+    """
     attrs = mesh.color_attributes
     attr = attrs.get(attr_name)
-    make_new = attr is None
     if attr is not None:
-        try:
-            make_new = (attr.domain != "CORNER") or (getattr(attr, "data_type", "FLOAT_COLOR") != "FLOAT_COLOR")
-        except Exception:
-            make_new = False
-    if make_new:
-        if attr is not None:
-            attrs.remove(attr)
-        attr = attrs.new(name=attr_name, type="FLOAT_COLOR", domain="CORNER")
+        attrs.remove(attr)
+    attr = attrs.new(name=attr_name, type="FLOAT_COLOR", domain="POINT")
 
-    n_loops = len(mesh.loops)
-    if n_loops == 0:
+    n_verts = len(mesh.vertices)
+    if n_verts == 0:
         return
-    loop_vidx = np.empty(n_loops, dtype=np.int32)
-    mesh.loops.foreach_get("vertex_index", loop_vidx)
 
-    rgba = np.empty((n_loops, 4), dtype=np.float32)
-    rgba[:, :3] = vertex_colors[loop_vidx]
+    rgba = np.empty((n_verts, 4), dtype=np.float32)
+    rgba[:, :3] = vertex_colors[:n_verts]
     rgba[:, 3] = 1.0
     attr.data.foreach_set("color", rgba.reshape(-1))
 
 
+def set_mesh_face_colors(mesh, face_colors, attr_name):
+    """
+    Write per-FACE colors into a CORNER-domain color attribute.
+    Each triangle's 3 corners get the same color → flat per-face look.
+
+    face_colors : (F, 3) float32
+    """
+    attrs = mesh.color_attributes
+    attr = attrs.get(attr_name)
+    if attr is not None:
+        attrs.remove(attr)
+    attr = attrs.new(name=attr_name, type="FLOAT_COLOR", domain="CORNER")
+
+    n_loops = len(mesh.loops)
+    if n_loops == 0:
+        return
+
+    # Each face has 3 loops (corners); repeat face color for all 3
+    loop_colors = np.repeat(face_colors, 3, axis=0)  # (F*3, 3)
+    rgba = np.empty((n_loops, 4), dtype=np.float32)
+    rgba[:, :3] = loop_colors[:n_loops]
+    rgba[:, 3] = 1.0
+    attr.data.foreach_set("color", rgba.reshape(-1))
+
+
+# ------------------------------------------------------------------
+#  Material + color assignment (the fixed pipeline)
+# ------------------------------------------------------------------
+
 def assign_materials(obj, labels, materials_dict):
+    """
+    Assign material and compute + write color attribute.
+
+    Pipeline:
+    1. Map face labels → face RGB colors via theme.
+    2. Scatter face colors to vertices (area-based averaging).
+    3. Smooth vertex colors with boundary-aware Laplacian diffusion.
+    4. Write colors to mesh attribute in the chosen domain.
+       - "vertex" domain: blended vertex colors → smooth gradients
+       - "face" domain:   raw face colors → flat per-triangle
+    """
     mesh = obj.data
-    if len(labels) != len(mesh.polygons):
+    n_polys = len(mesh.polygons)
+    if len(labels) != n_polys:
         raise ValueError(
-            f"{obj.name}: {len(labels)} labels for {len(mesh.polygons)} polygons"
+            f"{obj.name}: {len(labels)} labels for {n_polys} polygons"
         )
 
     theme = materials_dict["theme"]
@@ -417,19 +552,35 @@ def assign_materials(obj, labels, materials_dict):
         obj.data.materials.clear()
         obj.data.materials.append(surface_mat)
 
-    triangles = np.array([poly.vertices[:] for poly in mesh.polygons], dtype=np.int64)
-    face_colors = labels_to_face_colors(labels, theme)
+    # Step 1: per-face colors from theme
+    face_colors = labels_to_face_colors(labels, theme)  # (F, 3)
 
-    n_vertices = len(mesh.vertices)
-    vcols = np.zeros((n_vertices, 3), dtype=np.float32)
-    counts = np.zeros((n_vertices, 1), dtype=np.float32)
+    if CFG.color_domain == "face" or CFG.color_blend_iters <= 0:
+        # No smoothing — write flat face colors
+        set_mesh_face_colors(mesh, face_colors, CFG.color_attribute_name)
+        return
+
+    # Step 2: scatter face colors to vertices
+    triangles = np.array([poly.vertices[:] for poly in mesh.polygons], dtype=np.int64)
+    n_verts = len(mesh.vertices)
+    vcols = np.zeros((n_verts, 3), dtype=np.float32)
+    counts = np.zeros((n_verts, 1), dtype=np.float32)
     for k in range(3):
         idx = triangles[:, k]
         np.add.at(vcols, idx, face_colors)
         np.add.at(counts[:, 0], idx, 1.0)
-    vcols = vcols / np.maximum(counts, 1.0)
-    vcols = blend_vertex_colors(vcols, triangles, CFG.color_blend_iters, CFG.color_blend_self_weight)
-    set_mesh_color_attribute(mesh, vcols, CFG.color_attribute_name)
+    vcols /= np.maximum(counts, 1.0)
+
+    # Step 3: boundary-aware Laplacian smoothing
+    vcols = blend_vertex_colors_boundary_aware(
+        vcols, triangles, labels,
+        CFG.color_blend_iters,
+        CFG.color_blend_self_weight,
+        CFG.boundary_weight,
+    )
+
+    # Step 4: write smoothed vertex colors (POINT domain → Blender interpolates)
+    set_mesh_vertex_colors(mesh, vcols, CFG.color_attribute_name)
 
 
 def update_mesh(obj, vertices, triangles):
@@ -442,11 +593,9 @@ def update_mesh(obj, vertices, triangles):
 
 
 def ensure_outward_normals(obj):
-    """Fallback for preprocessed data with inverted winding."""
     mesh = obj.data
     if len(mesh.polygons) == 0:
         return
-
     verts = np.array([v.co[:] for v in mesh.vertices], dtype=np.float64)
     tris = np.array([p.vertices[:] for p in mesh.polygons], dtype=np.int64)
     tri = verts[tris]
@@ -460,16 +609,16 @@ def ensure_outward_normals(obj):
 
 
 def apply_surface_shading(obj):
-    """Smooth surface shading for cleaner publication visuals."""
+    """Configure mesh shading: smooth or flat, with optional auto-smooth."""
+    use_smooth = CFG.smooth_shading
     for poly in obj.data.polygons:
-        poly.use_smooth = True
-    if hasattr(obj.data, "use_auto_smooth"):
+        poly.use_smooth = use_smooth
+    if use_smooth and hasattr(obj.data, "use_auto_smooth"):
         obj.data.use_auto_smooth = True
-        obj.data.auto_smooth_angle = math.radians(48.0)
+        obj.data.auto_smooth_angle = math.radians(CFG.auto_smooth_angle)
 
 
 def smooth_track(values, alpha):
-    """Exponential smoothing to reduce camera jitter."""
     if not values:
         return []
     a = min(max(alpha, 0.0), 1.0)
@@ -501,7 +650,6 @@ def robust_center_y(frames):
 
 
 def compute_frame_coverage(frames1, frames2, y_off1, y_off2, n):
-    """Frame-wise bounds for stable camera scale and tracking."""
     frame_centers_x = []
     frame_centers_y = []
     frame_x_min = []
@@ -573,7 +721,6 @@ def compute_frame_coverage(frames1, frames2, y_off1, y_off2, n):
 
 
 def compute_required_ortho_scale(coverage, x_track, y_track, aspect, padding):
-    """Width-style ortho scale needed to keep all frame bounds inside view."""
     if aspect <= 0:
         aspect = 1.0
     pad = max(float(padding), 1.0)
@@ -587,7 +734,6 @@ def compute_required_ortho_scale(coverage, x_track, y_track, aspect, padding):
             cy - coverage["frame_y_min"][fi],
             coverage["frame_y_max"][fi] - cy,
         )
-        # Blender ORTHO ortho_scale is camera width.
         required = max(required, max(2.0 * half_x, 2.0 * half_y * aspect))
     return max(required * pad, 1e-3)
 
@@ -597,7 +743,6 @@ def compute_required_ortho_scale(coverage, x_track, y_track, aspect, padding):
 # ==================================================================
 
 def setup_world():
-    """Black background."""
     world = bpy.context.scene.world
     if world is None:
         world = bpy.data.worlds.new("World")
@@ -614,7 +759,6 @@ def setup_world():
 
 
 def setup_camera(track_x0, track_y, track_z, ortho_scale, z_span):
-    """Orthographic camera parented to a tracking rig."""
     rig = bpy.data.objects.new("CameraRig", None)
     bpy.context.collection.objects.link(rig)
     rig.location = Vector((track_x0, track_y, track_z))
@@ -644,7 +788,6 @@ def setup_camera(track_x0, track_y, track_z, ortho_scale, z_span):
 
 
 def setup_lights(rig, ortho_scale, cam_height):
-    """Three-point area-light rig that follows the camera rig."""
     spread = max(ortho_scale * CFG.light_spread, 3.0)
     base_size = max(ortho_scale * 0.75, 1.5)
     light_z = max(cam_height * CFG.light_z_factor, spread * 1.2)
@@ -663,22 +806,15 @@ def setup_lights(rig, ortho_scale, cam_height):
         lo.rotation_euler = (0, 0, 0)
         return lo
 
-    add_light(
-        "Key", CFG.key_energy, CFG.key_color, CFG.key_size_factor,
-        (-spread * 0.40, -spread * 0.40, 0.0),
-    )
-    add_light(
-        "Fill", CFG.fill_energy, CFG.fill_color, CFG.fill_size_factor,
-        (spread * 0.42, spread * 0.12, -spread * 0.12),
-    )
-    add_light(
-        "Rim", CFG.rim_energy, CFG.rim_color, CFG.rim_size_factor,
-        (0.0, spread * 0.52, -spread * 0.18),
-    )
+    add_light("Key", CFG.key_energy, CFG.key_color, CFG.key_size_factor,
+              (-spread * 0.40, -spread * 0.40, 0.0))
+    add_light("Fill", CFG.fill_energy, CFG.fill_color, CFG.fill_size_factor,
+              (spread * 0.42, spread * 0.12, -spread * 0.12))
+    add_light("Rim", CFG.rim_energy, CFG.rim_color, CFG.rim_size_factor,
+              (0.0, spread * 0.52, -spread * 0.18))
 
 
 def create_reference_line(x_min, x_max, y_pos, z_pos):
-    """Thin emissive cylinder along X."""
     x_ext = max(x_max - x_min, 1e-3)
     x_lo = x_min - x_ext * CFG.line_extend
     x_hi = x_max + x_ext * CFG.line_extend
@@ -708,7 +844,6 @@ def create_reference_line(x_min, x_max, y_pos, z_pos):
 
 
 def create_checkerboard_background(x_min, x_max, y_min, y_max, z_pos):
-    """Subtle checkerboard plane to provide scene scale cues."""
     if not CFG.checkerboard_enable:
         return None
 
@@ -760,10 +895,9 @@ def setup_render():
     scene.render.resolution_y = CFG.resolution[1]
     scene.render.resolution_percentage = 100
     scene.render.image_settings.file_format = "PNG"
-    scene.render.film_transparent = False   # render world background (black)
+    scene.render.film_transparent = False
     scene.render.use_motion_blur = False
 
-    # Color management with gentle contrast for presentation frames.
     for vt in ("Standard", "AgX", "Filmic"):
         try:
             scene.view_settings.view_transform = vt
@@ -876,11 +1010,9 @@ def render_all(input_dir, output_dir):
     coverage = compute_frame_coverage(frames1, frames2, y_off1, y_off2, n)
     track_z = (coverage["z_min"] + coverage["z_max"]) * 0.5
     z_checker = coverage["z_min"] - max(0.05, CFG.checker_z_offset * coverage["z_span"])
-    # Keep guide lines slightly above fish so they remain visible.
     z_line = coverage["z_max"] + max(0.02, coverage["z_span"] * 0.01)
 
     if abs(y_line1 - y_line2) < 1e-6:
-        # Keep two distinct guides even if user forces zero lane gap.
         y_line2 -= max(0.05, coverage["ortho_scale"] * 0.03)
 
     aspect = CFG.resolution[0] / CFG.resolution[1]
@@ -915,7 +1047,9 @@ def render_all(input_dir, output_dir):
     print(f"  Camera mode: {camera_mode}")
     print(f"  Ortho scale: {camera_ortho:.3f}")
     print(f"  Trajectory X: {coverage['x_min']:.3f} → {coverage['x_max']:.3f}")
-    print(f"  Color blending: {CFG.color_blend_iters} iterations")
+    print(f"  Smoothing: domain={CFG.color_domain}  iters={CFG.color_blend_iters}  "
+          f"self_w={CFG.color_blend_self_weight}  boundary_w={CFG.boundary_weight}")
+    print(f"  Mesh shading: {'smooth' if CFG.smooth_shading else 'flat'}")
     print(f"  Background: {'checkerboard' if CFG.checkerboard_enable else 'black'}")
 
     # ── Scene ─────────────────────────────────────────────────
@@ -932,15 +1066,12 @@ def render_all(input_dir, output_dir):
         z_checker,
     )
 
-    # Reference lines
     create_reference_line(coverage["x_min"], coverage["x_max"], y_line1, z_line)
     create_reference_line(coverage["x_min"], coverage["x_max"], y_line2, z_line)
 
-    # Materials
     mats1 = build_materials(CFG.theme_fish1, "fish1")
     mats2 = build_materials(CFG.theme_fish2, "fish2")
 
-    # Initial meshes
     f1 = frames1[0]; f2 = frames2[0]
     v1 = f1["vertices"].copy(); v1[:, 1] += y_off1
     v2 = f2["vertices"].copy(); v2[:, 1] += y_off2
@@ -1011,23 +1142,63 @@ def make_video(output_dir, n):
 
 def parse_args():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--input", required=True)
-    ap.add_argument("--output", required=True)
-    ap.add_argument("--resolution", type=int, nargs=2, default=None)
-    ap.add_argument("--samples", type=int, default=None)
+    ap = argparse.ArgumentParser(
+        description="Headless Blender renderer for two-fish FEM comparison."
+    )
+    ap.add_argument("--input", required=True, help="Directory with fish1/ fish2/ preprocessed frames")
+    ap.add_argument("--output", required=True, help="Output directory for rendered frames")
+    ap.add_argument("--resolution", type=int, nargs=2, default=None, metavar=("W", "H"))
+    ap.add_argument("--samples", type=int, default=None, help="Render samples (16=test, 128+=final)")
     ap.add_argument("--fps", type=int, default=None)
-    ap.add_argument("--engine", choices=["CYCLES","BLENDER_EEVEE_NEXT","BLENDER_EEVEE"], default=None)
+    ap.add_argument("--engine", choices=["CYCLES", "BLENDER_EEVEE_NEXT", "BLENDER_EEVEE"], default=None)
     ap.add_argument("--no-video", action="store_true")
-    ap.add_argument("--y-gap", type=float, default=None)
+    ap.add_argument("--y-gap", type=float, default=None, help="Y gap between fish lanes")
     ap.add_argument("--allow-missing-stream", action="store_true")
+
+    # ── Smoothing controls ────────────────────────────────────
+    smooth = ap.add_argument_group("smoothing", "Color smoothing and shading controls")
+    smooth.add_argument("--blend-iters", type=int, default=None,
+                        help=f"Laplacian diffusion iterations (default: {CFG.color_blend_iters}). "
+                             "0 disables smoothing entirely.")
+    smooth.add_argument("--blend-self-weight", type=float, default=None,
+                        help=f"Self-retention weight during diffusion (default: {CFG.color_blend_self_weight}). "
+                             "Higher = vertex keeps more of its own color.")
+    smooth.add_argument("--boundary-weight", type=float, default=None,
+                        help=f"Cross-label edge weight (default: {CFG.boundary_weight}). "
+                             "0.0 = hard boundary (no bleed across labels). "
+                             "1.0 = ignore labels (full diffusion everywhere).")
+    smooth.add_argument("--color-domain", choices=["vertex", "face"], default=None,
+                        help=f"Color attribute domain (default: {CFG.color_domain}). "
+                             "'vertex' = smooth interpolated gradients. "
+                             "'face' = flat per-triangle colors (no smoothing).")
+    smooth.add_argument("--smooth-shading", action="store_true", default=None,
+                        help="Enable smooth mesh shading (default: on)")
+    smooth.add_argument("--flat-shading", action="store_true",
+                        help="Force flat mesh shading")
+    smooth.add_argument("--auto-smooth-angle", type=float, default=None,
+                        help=f"Auto-smooth angle in degrees (default: {CFG.auto_smooth_angle})")
+
     args = ap.parse_args(argv)
+
+    # Apply to settings
     if args.resolution is not None: CFG.resolution = tuple(args.resolution)
     if args.samples is not None:    CFG.render_samples = args.samples
     if args.fps is not None:        CFG.fps = args.fps
     if args.engine is not None:     CFG.render_engine = args.engine
     if args.y_gap is not None:      CFG.fish_y_gap = args.y_gap
     CFG.allow_missing_stream = bool(args.allow_missing_stream)
+
+    # Smoothing
+    if args.blend_iters is not None:      CFG.color_blend_iters = args.blend_iters
+    if args.blend_self_weight is not None: CFG.color_blend_self_weight = args.blend_self_weight
+    if args.boundary_weight is not None:   CFG.boundary_weight = args.boundary_weight
+    if args.color_domain is not None:      CFG.color_domain = args.color_domain
+    if args.auto_smooth_angle is not None: CFG.auto_smooth_angle = args.auto_smooth_angle
+    if args.flat_shading:
+        CFG.smooth_shading = False
+    elif args.smooth_shading:
+        CFG.smooth_shading = True
+
     return args
 
 
@@ -1038,6 +1209,10 @@ if __name__ == "__main__":
         print(f"  Input:  {args.input}")
         print(f"  Output: {args.output}")
         print(f"  {CFG.resolution[0]}×{CFG.resolution[1]}  samples={CFG.render_samples}")
+        print(f"  Smoothing: domain={CFG.color_domain}  iters={CFG.color_blend_iters}  "
+              f"self_w={CFG.color_blend_self_weight}  boundary_w={CFG.boundary_weight}")
+        print(f"  Shading: {'smooth' if CFG.smooth_shading else 'flat'} "
+              f"(auto-smooth angle={CFG.auto_smooth_angle}°)")
         print("=" * 50)
         n = render_all(args.input, args.output)
         if not args.no_video and n > 0:
