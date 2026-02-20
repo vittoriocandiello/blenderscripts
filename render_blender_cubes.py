@@ -45,11 +45,11 @@ class Settings:
     world_color      = (0.0, 0.0, 0.0)
     world_strength   = 0.0
     checkerboard_enable = True
-    checker_tiles_x  = 22
+    checker_tiles_x  = 14
     checker_margin   = 0.20
     checker_cover_scale = 1.30
     checker_color_a  = (0.0, 0.0, 0.0)
-    checker_color_b  = (0.22, 0.22, 0.22)
+    checker_color_b  = (0.32, 0.32, 0.32)
     checker_emission = 1.0
     checker_z_offset = 0.10
 
