@@ -41,14 +41,18 @@ class Settings:
     # ── Background ────────────────────────────────────────────
     world_color      = (1.0, 1.0, 1.0)
     world_strength   = 0.0
-    checkerboard_enable = True
-    checker_tiles_x  = 32 #22
-    checker_margin   = 1.00
-    checker_cover_scale = 1.30
-    checker_color_a  = (0.8, 0.8, 0.8)      
-    checker_color_b  = (0.52, 0.52, 0.52)   
-    checker_emission = 1.0
-    checker_z_offset = 0.10
+
+    # ── Grid ground plane ─────────────────────────────────────
+    grid_enable      = True
+    grid_color       = (0.55, 0.55, 0.55)      # thin line color (medium gray)
+    grid_bg_color    = (1.0, 1.0, 1.0)       # ground plane fill (near-white)
+    grid_emission    = 1.0                    # emission strength for ground
+    grid_line_width  = 0.10                  # base line thickness in scene units
+    grid_min_pixels  = 5.0                    # enforce minimum visible line width in pixels
+    grid_spacing     = 1.5                    # auto-computed if None
+    grid_margin      = 0.60
+    grid_cover_scale = 1.30
+    grid_z_offset    = 0.10
 
     # ── Lighting ──────────────────────────────────────────────
     key_energy       = 520.0
@@ -357,56 +361,39 @@ def triangles_to_edges(triangles):
 # ------------------------------------------------------------------
 
 def _build_edge_weights(triangles, labels, n_verts, boundary_weight):
-    """
-    Build unique edge list with weights: 1.0 for same-label edges,
-    `boundary_weight` for edges shared by faces with different labels.
-
-    Correctly handles boundary edges (shared by only one face).
-    """
     tri = np.asarray(triangles, dtype=np.int64)
     lab = np.asarray(labels, dtype=np.int32)
-    n_faces = len(tri)
 
-    # Each face contributes 3 directed half-edges
-    # half_edges[i] = (v_lo, v_hi, face_label)
     he_v0 = np.concatenate([tri[:, 0], tri[:, 1], tri[:, 2]])
     he_v1 = np.concatenate([tri[:, 1], tri[:, 2], tri[:, 0]])
     he_lab = np.tile(lab, 3)
 
-    # Sort each edge so v_lo < v_hi
     swap = he_v0 > he_v1
     he_v0_s = np.where(swap, he_v1, he_v0)
     he_v1_s = np.where(swap, he_v0, he_v1)
 
-    # Encode edge as single int for grouping
     max_v = n_verts + 1
     edge_key = he_v0_s * max_v + he_v1_s
 
-    # Sort by edge key to group half-edges belonging to the same edge
     order = np.argsort(edge_key)
     ek_sorted = edge_key[order]
     lab_sorted = he_lab[order]
     v0_sorted = he_v0_s[order]
     v1_sorted = he_v1_s[order]
 
-    # Find unique edges
     unique_mask = np.empty(len(ek_sorted), dtype=bool)
     unique_mask[0] = True
     unique_mask[1:] = ek_sorted[1:] != ek_sorted[:-1]
     u_idx = np.where(unique_mask)[0]
-    n_unique = len(u_idx)
 
     u_v0 = v0_sorted[u_idx]
     u_v1 = v1_sorted[u_idx]
 
-    # Determine if edge is interior (shared by 2 faces) and whether labels match
-    # For each unique edge start, check if next half-edge belongs to same edge
-    # and whether labels differ.
     next_idx = np.minimum(u_idx + 1, len(ek_sorted) - 1)
-    is_interior = (ek_sorted[next_idx] == ek_sorted[u_idx])  # True if 2+ half-edges
+    is_interior = (ek_sorted[next_idx] == ek_sorted[u_idx])
     lab_a = lab_sorted[u_idx]
     lab_b = lab_sorted[next_idx]
-    same_label = (~is_interior) | (lab_a == lab_b)  # boundary edges count as "same"
+    same_label = (~is_interior) | (lab_a == lab_b)
 
     bw = float(np.clip(boundary_weight, 0.0, 1.0))
     edge_w = np.where(same_label, 1.0, bw).astype(np.float32)
@@ -416,24 +403,6 @@ def _build_edge_weights(triangles, labels, n_verts, boundary_weight):
 
 def blend_vertex_colors_boundary_aware(vertex_colors, triangles, labels,
                                         iters, self_weight, boundary_weight):
-    """
-    Laplacian diffusion of vertex colors with boundary-aware edge weights.
-
-    Parameters
-    ----------
-    vertex_colors : (V, 3) float32
-    triangles     : (F, 3) int
-    labels        : (F,) int   — per-face labels
-    iters         : int        — diffusion iterations; 0 = no-op
-    self_weight   : float      — how much a vertex retains its color vs neighbor avg
-    boundary_weight : float    — weight for edges crossing label boundaries
-                                 0.0 = hard boundary (no diffusion across)
-                                 1.0 = ignore labels entirely
-
-    Returns
-    -------
-    (V, 3) float32, clipped to [0, 1]
-    """
     if iters <= 0 or len(vertex_colors) == 0:
         return vertex_colors.copy()
 
@@ -445,8 +414,7 @@ def blend_vertex_colors_boundary_aware(vertex_colors, triangles, labels,
 
     cur = vertex_colors.astype(np.float32, copy=True)
     sw = float(max(self_weight, 0.0))
-
-    ew3 = edge_w[:, None]  # (E, 1) for broadcasting against (E, 3) colors
+    ew3 = edge_w[:, None]
 
     for _ in range(int(iters)):
         nb_sum = np.zeros_like(cur)
@@ -468,12 +436,6 @@ def blend_vertex_colors_boundary_aware(vertex_colors, triangles, labels,
 # ------------------------------------------------------------------
 
 def set_mesh_vertex_colors(mesh, vertex_colors, attr_name):
-    """
-    Write per-VERTEX colors into a POINT-domain color attribute.
-    Blender interpolates across faces automatically → smooth gradients.
-
-    vertex_colors : (V, 3) float32
-    """
     attrs = mesh.color_attributes
     attr = attrs.get(attr_name)
     if attr is not None:
@@ -491,12 +453,6 @@ def set_mesh_vertex_colors(mesh, vertex_colors, attr_name):
 
 
 def set_mesh_face_colors(mesh, face_colors, attr_name):
-    """
-    Write per-FACE colors into a CORNER-domain color attribute.
-    Each triangle's 3 corners get the same color → flat per-face look.
-
-    face_colors : (F, 3) float32
-    """
     attrs = mesh.color_attributes
     attr = attrs.get(attr_name)
     if attr is not None:
@@ -507,8 +463,7 @@ def set_mesh_face_colors(mesh, face_colors, attr_name):
     if n_loops == 0:
         return
 
-    # Each face has 3 loops (corners); repeat face color for all 3
-    loop_colors = np.repeat(face_colors, 3, axis=0)  # (F*3, 3)
+    loop_colors = np.repeat(face_colors, 3, axis=0)
     rgba = np.empty((n_loops, 4), dtype=np.float32)
     rgba[:, :3] = loop_colors[:n_loops]
     rgba[:, 3] = 1.0
@@ -516,21 +471,10 @@ def set_mesh_face_colors(mesh, face_colors, attr_name):
 
 
 # ------------------------------------------------------------------
-#  Material + color assignment (the fixed pipeline)
+#  Material + color assignment
 # ------------------------------------------------------------------
 
 def assign_materials(obj, labels, materials_dict):
-    """
-    Assign material and compute + write color attribute.
-
-    Pipeline:
-    1. Map face labels → face RGB colors via theme.
-    2. Scatter face colors to vertices (area-based averaging).
-    3. Smooth vertex colors with boundary-aware Laplacian diffusion.
-    4. Write colors to mesh attribute in the chosen domain.
-       - "vertex" domain: blended vertex colors → smooth gradients
-       - "face" domain:   raw face colors → flat per-triangle
-    """
     mesh = obj.data
     n_polys = len(mesh.polygons)
     if len(labels) != n_polys:
@@ -544,15 +488,12 @@ def assign_materials(obj, labels, materials_dict):
         obj.data.materials.clear()
         obj.data.materials.append(surface_mat)
 
-    # Step 1: per-face colors from theme
-    face_colors = labels_to_face_colors(labels, theme)  # (F, 3)
+    face_colors = labels_to_face_colors(labels, theme)
 
     if CFG.color_domain == "face" or CFG.color_blend_iters <= 0:
-        # No smoothing — write flat face colors
         set_mesh_face_colors(mesh, face_colors, CFG.color_attribute_name)
         return
 
-    # Step 2: scatter face colors to vertices
     triangles = np.array([poly.vertices[:] for poly in mesh.polygons], dtype=np.int64)
     n_verts = len(mesh.vertices)
     vcols = np.zeros((n_verts, 3), dtype=np.float32)
@@ -563,7 +504,6 @@ def assign_materials(obj, labels, materials_dict):
         np.add.at(counts[:, 0], idx, 1.0)
     vcols /= np.maximum(counts, 1.0)
 
-    # Step 3: boundary-aware Laplacian smoothing
     vcols = blend_vertex_colors_boundary_aware(
         vcols, triangles, labels,
         CFG.color_blend_iters,
@@ -571,7 +511,6 @@ def assign_materials(obj, labels, materials_dict):
         CFG.boundary_weight,
     )
 
-    # Step 4: write smoothed vertex colors (POINT domain → Blender interpolates)
     set_mesh_vertex_colors(mesh, vcols, CFG.color_attribute_name)
 
 
@@ -601,7 +540,6 @@ def ensure_outward_normals(obj):
 
 
 def apply_surface_shading(obj):
-    """Configure mesh shading: smooth or flat, with optional auto-smooth."""
     use_smooth = CFG.smooth_shading
     for poly in obj.data.polygons:
         poly.use_smooth = use_smooth
@@ -835,48 +773,135 @@ def create_reference_line(x_min, x_max, y_pos, z_pos):
     return line
 
 
-def create_checkerboard_background(x_min, x_max, y_min, y_max, z_pos):
-    if not CFG.checkerboard_enable:
-        return None
-
-    span_x = max(x_max - x_min, 1e-3)
-    span_y = max(y_max - y_min, 1e-3)
-    ext_x = span_x * (1.0 + 2.0 * CFG.checker_margin)
-    ext_y = span_y * (1.0 + 2.0 * CFG.checker_margin)
-    cx = 0.5 * (x_min + x_max)
-    cy = 0.5 * (y_min + y_max)
-
-    bpy.ops.mesh.primitive_plane_add(size=1.0, location=(cx, cy, z_pos))
-    plane = bpy.context.active_object
-    plane.name = "ScaleCheckerboard"
-    plane.scale = (0.5 * ext_x, 0.5 * ext_y, 1.0)
-
-    mat = bpy.data.materials.new("ScaleCheckerboardMat")
+def _create_grid_line_material():
+    """Shared emissive material for all grid lines."""
+    mat = bpy.data.materials.new("GridLineMat")
     mat.use_nodes = True
     nodes = mat.node_tree.nodes
     links = mat.node_tree.links
     for n in list(nodes):
         nodes.remove(n)
-
-    texcoord = nodes.new("ShaderNodeTexCoord")
-    mapping = nodes.new("ShaderNodeMapping")
-    checker = nodes.new("ShaderNodeTexChecker")
-    emission = nodes.new("ShaderNodeEmission")
     out = nodes.new("ShaderNodeOutputMaterial")
+    em = nodes.new("ShaderNodeEmission")
+    set_node_input(em, "Color", to_rgba(CFG.grid_color))
+    set_node_input(em, "Strength", CFG.grid_emission)
+    links.new(em.outputs["Emission"], out.inputs["Surface"])
+    return mat
 
-    tile_size = max(span_x / max(CFG.checker_tiles_x, 2), 1e-3)
-    set_node_input(mapping, "Scale", (ext_x / tile_size, ext_y / tile_size, 1.0))
-    set_node_input(checker, "Color1", to_rgba(CFG.checker_color_a))
-    set_node_input(checker, "Color2", to_rgba(CFG.checker_color_b))
-    set_node_input(checker, "Scale", 1.0)
-    set_node_input(emission, "Strength", CFG.checker_emission)
 
-    links.new(texcoord.outputs["Generated"], mapping.inputs["Vector"])
-    links.new(mapping.outputs["Vector"], checker.inputs["Vector"])
-    links.new(checker.outputs["Color"], emission.inputs["Color"])
-    links.new(emission.outputs["Emission"], out.inputs["Surface"])
+def _create_grid_ground_material():
+    """Flat emissive material for the ground plane background."""
+    mat = bpy.data.materials.new("GridGroundMat")
+    mat.use_nodes = True
+    nodes = mat.node_tree.nodes
+    links = mat.node_tree.links
+    for n in list(nodes):
+        nodes.remove(n)
+    out = nodes.new("ShaderNodeOutputMaterial")
+    em = nodes.new("ShaderNodeEmission")
+    set_node_input(em, "Color", to_rgba(CFG.grid_bg_color))
+    set_node_input(em, "Strength", CFG.grid_emission)
+    links.new(em.outputs["Emission"], out.inputs["Surface"])
+    return mat
 
-    plane.data.materials.append(mat)
+
+def create_grid_ground(x_min, x_max, y_min, y_max, z_pos, camera_ortho=None):
+    """Ground plane with a regular grid of thin lines, suitable for thesis figures.
+
+    Creates a flat background plane and overlays thin box-shaped lines along
+    both the X and Y directions at uniform spacing.
+    """
+    if not CFG.grid_enable:
+        return None
+
+    span_x = max(x_max - x_min, 1e-3)
+    span_y = max(y_max - y_min, 1e-3)
+    ext_x = span_x * (1.0 + 2.0 * CFG.grid_margin)
+    ext_y = span_y * (1.0 + 2.0 * CFG.grid_margin)
+    cx = 0.5 * (x_min + x_max)
+    cy = 0.5 * (y_min + y_max)
+
+    # Determine grid spacing: use user value or auto-compute from scene extent
+    if CFG.grid_spacing is not None and CFG.grid_spacing > 0:
+        spacing = CFG.grid_spacing
+    else:
+        shorter = min(ext_x, ext_y)
+        spacing = shorter / 14.0
+
+    # Keep thin lines visible in orthographic renders by clamping to a
+    # minimum on-screen pixel width.
+    if camera_ortho is not None and camera_ortho > 0:
+        visible_width = float(camera_ortho)
+    else:
+        visible_width = max(x_max - x_min, 1e-6)
+    px_world = visible_width / max(int(CFG.resolution[0]), 1)
+
+    # Plane bounds with margin
+    plane_x_lo = cx - 0.5 * ext_x
+    plane_x_hi = cx + 0.5 * ext_x
+    plane_y_lo = cy - 0.5 * ext_y
+    plane_y_hi = cy + 0.5 * ext_y
+
+    # ── Background plane ──────────────────────────────────────
+    bpy.ops.mesh.primitive_plane_add(size=1.0, location=(cx, cy, z_pos))
+    plane = bpy.context.active_object
+    plane.name = "GridGround"
+    plane.scale = (0.5 * ext_x, 0.5 * ext_y, 1.0)
+    ground_mat = _create_grid_ground_material()
+    plane.data.materials.append(ground_mat)
+
+    # ── Grid lines ────────────────────────────────────────────
+    # Lines are flat on the XY plane: thin in one horizontal direction,
+    # long in the other, and with a small Z thickness to sit above the ground.
+    line_mat = _create_grid_line_material()
+    line_w = max(
+        CFG.grid_line_width,
+        px_world * max(float(CFG.grid_min_pixels), 0.0),
+        1e-5,
+    )
+    line_px = line_w / max(px_world, 1e-8)
+    line_h = line_w * 0.5  # Z thickness (thin slab)
+    line_z = z_pos + 0.005 + line_h * 0.5  # lift above ground to avoid z-fighting
+
+    # Collect all line objects under an empty for tidiness
+    grid_parent = bpy.data.objects.new("GridLines", None)
+    bpy.context.collection.objects.link(grid_parent)
+
+    line_count = 0
+
+    # Lines parallel to X (varying Y): long in X, thin in Y, slab in Z
+    y_start = cy - math.floor((cy - plane_y_lo) / spacing) * spacing
+    y_pos_iter = y_start
+    while y_pos_iter <= plane_y_hi + 1e-8:
+        length = ext_x
+        bpy.ops.mesh.primitive_cube_add(size=1.0, location=(cx, y_pos_iter, line_z))
+        obj = bpy.context.active_object
+        obj.scale = (0.5 * length, 0.5 * line_w, 0.5 * line_h)
+        obj.name = f"GridLineX_{line_count}"
+        obj.parent = grid_parent
+        obj.data.materials.append(line_mat)
+        line_count += 1
+        y_pos_iter += spacing
+
+    # Lines parallel to Y (varying X): long in Y, thin in X, slab in Z
+    x_start = cx - math.floor((cx - plane_x_lo) / spacing) * spacing
+    x_pos_iter = x_start
+    while x_pos_iter <= plane_x_hi + 1e-8:
+        length = ext_y
+        bpy.ops.mesh.primitive_cube_add(size=1.0, location=(x_pos_iter, cy, line_z))
+        obj = bpy.context.active_object
+        obj.scale = (0.5 * line_w, 0.5 * length, 0.5 * line_h)
+        obj.name = f"GridLineY_{line_count}"
+        obj.parent = grid_parent
+        obj.data.materials.append(line_mat)
+        line_count += 1
+        x_pos_iter += spacing
+
+    print(
+        f"  Grid: {line_count} lines, spacing={spacing:.4f}, "
+        f"line_width={line_w:.4f} (~{line_px:.2f}px)"
+    )
+
     return plane
 
 
@@ -1056,7 +1081,7 @@ def render_overlay(input_dir, output_arg, frame_indices):
 
     coverage = compute_frame_coverage(frames1_sel, frames2_sel, y_off1, y_off2, n_selected)
     track_z = (coverage["z_min"] + coverage["z_max"]) * 0.5
-    z_checker = coverage["z_min"] - max(0.05, CFG.checker_z_offset * coverage["z_span"])
+    z_ground = coverage["z_min"] - max(0.05, CFG.grid_z_offset * coverage["z_span"])
     z_line = coverage["z_max"] + max(0.02, coverage["z_span"] * 0.01)
 
     if abs(y_line1 - y_line2) < 1e-6:
@@ -1076,7 +1101,7 @@ def render_overlay(input_dir, output_arg, frame_indices):
 
     cam_half_x = 0.5 * camera_ortho
     cam_half_y = cam_half_x / aspect
-    cover = max(CFG.checker_cover_scale, 1.0)
+    cover = max(CFG.grid_cover_scale, 1.0)
     bg_half_x = cam_half_x * cover
     bg_half_y = cam_half_y * cover
     bg_x_min = x_fixed - bg_half_x
@@ -1090,7 +1115,7 @@ def render_overlay(input_dir, output_arg, frame_indices):
     print(f"  Smoothing: domain={CFG.color_domain}  iters={CFG.color_blend_iters}  "
           f"self_w={CFG.color_blend_self_weight}  boundary_w={CFG.boundary_weight}")
     print(f"  Mesh shading: {'smooth' if CFG.smooth_shading else 'flat'}")
-    print(f"  Background: {'checkerboard' if CFG.checkerboard_enable else 'black'}")
+    print(f"  Ground: {'grid' if CFG.grid_enable else 'none'}")
 
     # ── Scene ─────────────────────────────────────────────────
     clear_scene()
@@ -1100,10 +1125,11 @@ def render_overlay(input_dir, output_arg, frame_indices):
         x_fixed, y_fixed, track_z, camera_ortho, coverage["z_span"],
     )
     setup_lights(rig, camera_ortho, cam_height)
-    create_checkerboard_background(
+    create_grid_ground(
         bg_x_min, bg_x_max,
         bg_y_min, bg_y_max,
-        z_checker,
+        z_ground,
+        camera_ortho=camera_ortho,
     )
 
     create_reference_line(coverage["x_min"], coverage["x_max"], y_line1, z_line)
@@ -1161,6 +1187,17 @@ def parse_args():
     ap.add_argument("--y-gap", type=float, default=None, help="Y gap between fish lanes")
     ap.add_argument("--allow-missing-stream", action="store_true")
 
+    # ── Grid controls ─────────────────────────────────────────
+    grid_grp = ap.add_argument_group("grid", "Grid ground plane controls")
+    grid_grp.add_argument("--grid-spacing", type=float, default=None,
+                          help="Grid line spacing in scene units (default: auto).")
+    grid_grp.add_argument("--grid-line-width", type=float, default=None,
+                          help=f"Grid line thickness (default: {CFG.grid_line_width}).")
+    grid_grp.add_argument("--grid-min-px", type=float, default=None,
+                          help=f"Minimum on-screen line width in pixels (default: {CFG.grid_min_pixels}).")
+    grid_grp.add_argument("--no-grid", action="store_true",
+                          help="Disable the grid ground plane.")
+
     # ── Smoothing controls ────────────────────────────────────
     smooth = ap.add_argument_group("smoothing", "Color smoothing and shading controls")
     smooth.add_argument("--blend-iters", type=int, default=None,
@@ -1193,6 +1230,12 @@ def parse_args():
     if args.y_gap is not None:      CFG.fish_y_gap = args.y_gap
     CFG.allow_missing_stream = bool(args.allow_missing_stream)
     args.frames = parse_frame_indices(args.frames)
+
+    # Grid
+    if args.grid_spacing is not None:    CFG.grid_spacing = args.grid_spacing
+    if args.grid_line_width is not None: CFG.grid_line_width = args.grid_line_width
+    if args.grid_min_px is not None:     CFG.grid_min_pixels = args.grid_min_px
+    if args.no_grid:                     CFG.grid_enable = False
 
     # Smoothing
     if args.blend_iters is not None:      CFG.color_blend_iters = args.blend_iters

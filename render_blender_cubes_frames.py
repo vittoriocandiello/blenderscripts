@@ -41,16 +41,19 @@ class Settings:
     camera_distance_mult = 2.5
 
     # ── Background ────────────────────────────────────────────
-    world_color      = (0.0, 0.0, 0.0)
+    world_color      = (1.0, 1.0, 1.0)
     world_strength   = 0.0
-    checkerboard_enable = True
-    checker_tiles_x  = 14
-    checker_margin   = 0.20
-    checker_cover_scale = 1.30
-    checker_color_a  = (0.0, 0.0, 0.0)
-    checker_color_b  = (0.32, 0.32, 0.32)
-    checker_emission = 1.0
-    checker_z_offset = 0.10
+
+    # ── Grid ground plane ─────────────────────────────────────
+    grid_enable      = True
+    grid_color       = (0.55, 0.55, 0.55)   # thin line color (medium gray)
+    grid_bg_color    = (1.0, 1.0, 1.0)    # ground plane fill (near-white)
+    grid_emission    = 1.0                    # emission strength for ground
+    grid_line_width  = 0.004                  # line thickness in scene units
+    grid_spacing     = 0.1                   # auto-computed if None
+    grid_margin      = 0.60
+    grid_cover_scale = 1.30
+    grid_z_offset    = 0.10
 
     # ── Lighting ──────────────────────────────────────────────
     # Three-point area rig (parented to camera rig).
@@ -78,9 +81,9 @@ class Settings:
     theme_cube1 = {
         "name": "StudioBlue",
         "default": (0.064, 0.176, 0.60),    # body
-        0: (0.12, 0.20, 0.88),              # light blue
-        1: (0.45, 0.08, 0.10),              # red
-        2: (0.45, 0.08, 0.10),              # red
+        0: (0.52, 0.60, 0.78),              # light blue
+        1: (0.15, 0.00, 0.00),
+        2: (0.15, 0.00, 0.00),
         3: (0.98, 0.66, 0.22),              # high-contrast golden yellow
         4: (0.31, 0.10, 0.38),              # deep violet
         5: (0.18, 0.34, 0.08),
@@ -94,9 +97,9 @@ class Settings:
     theme_cube2 = {
         "name": "StudioBlue",
         "default": (0.064, 0.176, 0.60),
-        0: (0.12, 0.20, 0.88),
-        1: (0.45, 0.08, 0.10),
-        2: (0.45, 0.08, 0.10),
+        0: (0.52, 0.60, 0.78),              # light blue
+        1: (0.15, 0.00, 0.00),
+        2: (0.15, 0.00, 0.00),
         3: (0.98, 0.66, 0.22),
         4: (0.31, 0.10, 0.38),
         5: (0.18, 0.34, 0.08),
@@ -688,7 +691,7 @@ def compute_required_ortho_scale_angled(coverage, x_track, y_track, track_z, rig
 # ==================================================================
 
 def setup_world():
-    """Neutral bright world, with most spatial cue coming from the checker ground."""
+    """Neutral bright world."""
     world = bpy.context.scene.world
     if world is None:
         world = bpy.data.worlds.new("World")
@@ -803,49 +806,117 @@ def create_reference_line(x_min, x_max, y_pos, z_pos):
     return line
 
 
-def create_checkerboard_background(x_min, x_max, y_min, y_max, z_pos):
-    """Checkerboard ground plane."""
-    if not CFG.checkerboard_enable:
-        return None
-
-    span_x = max(x_max - x_min, 1e-3)
-    span_y = max(y_max - y_min, 1e-3)
-    ext_x = span_x * (1.0 + 2.0 * CFG.checker_margin)
-    ext_y = span_y * (1.0 + 2.0 * CFG.checker_margin)
-    cx = 0.5 * (x_min + x_max)
-    cy = 0.5 * (y_min + y_max)
-
-    bpy.ops.mesh.primitive_plane_add(size=1.0, location=(cx, cy, z_pos))
-    plane = bpy.context.active_object
-    plane.name = "ScaleCheckerboard"
-    plane.scale = (0.5 * ext_x, 0.5 * ext_y, 1.0)
-
-    mat = bpy.data.materials.new("ScaleCheckerboardMat")
+def _create_grid_line_material():
+    """Shared emissive material for all grid lines."""
+    mat = bpy.data.materials.new("GridLineMat")
     mat.use_nodes = True
     nodes = mat.node_tree.nodes
     links = mat.node_tree.links
     for n in list(nodes):
         nodes.remove(n)
-
-    texcoord = nodes.new("ShaderNodeTexCoord")
-    mapping = nodes.new("ShaderNodeMapping")
-    checker = nodes.new("ShaderNodeTexChecker")
-    emission = nodes.new("ShaderNodeEmission")
     out = nodes.new("ShaderNodeOutputMaterial")
+    em = nodes.new("ShaderNodeEmission")
+    set_node_input(em, "Color", to_rgba(CFG.grid_color))
+    set_node_input(em, "Strength", CFG.grid_emission)
+    links.new(em.outputs["Emission"], out.inputs["Surface"])
+    return mat
 
-    tile_size = max(span_x / max(CFG.checker_tiles_x, 2), 1e-3)
-    set_node_input(mapping, "Scale", (ext_x / tile_size, ext_y / tile_size, 1.0))
-    set_node_input(checker, "Color1", to_rgba(CFG.checker_color_a))
-    set_node_input(checker, "Color2", to_rgba(CFG.checker_color_b))
-    set_node_input(checker, "Scale", 1.0)
-    set_node_input(emission, "Strength", CFG.checker_emission)
 
-    links.new(texcoord.outputs["Generated"], mapping.inputs["Vector"])
-    links.new(mapping.outputs["Vector"], checker.inputs["Vector"])
-    links.new(checker.outputs["Color"], emission.inputs["Color"])
-    links.new(emission.outputs["Emission"], out.inputs["Surface"])
+def _create_grid_ground_material():
+    """Flat emissive material for the ground plane background."""
+    mat = bpy.data.materials.new("GridGroundMat")
+    mat.use_nodes = True
+    nodes = mat.node_tree.nodes
+    links = mat.node_tree.links
+    for n in list(nodes):
+        nodes.remove(n)
+    out = nodes.new("ShaderNodeOutputMaterial")
+    em = nodes.new("ShaderNodeEmission")
+    set_node_input(em, "Color", to_rgba(CFG.grid_bg_color))
+    set_node_input(em, "Strength", CFG.grid_emission)
+    links.new(em.outputs["Emission"], out.inputs["Surface"])
+    return mat
 
-    plane.data.materials.append(mat)
+
+def create_grid_ground(x_min, x_max, y_min, y_max, z_pos):
+    """Ground plane with a regular grid of thin lines, suitable for thesis figures.
+
+    Creates a flat background plane and overlays thin box-shaped lines along
+    both the X and Y directions at uniform spacing.
+    """
+    if not CFG.grid_enable:
+        return None
+
+    span_x = max(x_max - x_min, 1e-3)
+    span_y = max(y_max - y_min, 1e-3)
+    ext_x = span_x * (1.0 + 2.0 * CFG.grid_margin)
+    ext_y = span_y * (1.0 + 2.0 * CFG.grid_margin)
+    cx = 0.5 * (x_min + x_max)
+    cy = 0.5 * (y_min + y_max)
+
+    # Determine grid spacing: use user value or auto-compute from scene extent
+    if CFG.grid_spacing is not None and CFG.grid_spacing > 0:
+        spacing = CFG.grid_spacing
+    else:
+        # Aim for roughly 12-18 lines across the shorter dimension
+        shorter = min(ext_x, ext_y)
+        spacing = shorter / 14.0
+
+    # Plane bounds with margin
+    plane_x_lo = cx - 0.5 * ext_x
+    plane_x_hi = cx + 0.5 * ext_x
+    plane_y_lo = cy - 0.5 * ext_y
+    plane_y_hi = cy + 0.5 * ext_y
+
+    # ── Background plane ──────────────────────────────────────
+    bpy.ops.mesh.primitive_plane_add(size=1.0, location=(cx, cy, z_pos))
+    plane = bpy.context.active_object
+    plane.name = "GridGround"
+    plane.scale = (0.5 * ext_x, 0.5 * ext_y, 1.0)
+    ground_mat = _create_grid_ground_material()
+    plane.data.materials.append(ground_mat)
+
+    # ── Grid lines ────────────────────────────────────────────
+    line_mat = _create_grid_line_material()
+    line_w = max(CFG.grid_line_width, 1e-5)
+    line_z = z_pos + line_w * 0.6  # slightly above ground to avoid z-fighting
+
+    # Collect all line objects under an empty for tidiness
+    grid_parent = bpy.data.objects.new("GridLines", None)
+    bpy.context.collection.objects.link(grid_parent)
+
+    line_count = 0
+
+    # Lines parallel to X (varying Y)
+    y_start = cy - math.floor((cy - plane_y_lo) / spacing) * spacing
+    y_pos = y_start
+    while y_pos <= plane_y_hi + 1e-8:
+        length = ext_x
+        bpy.ops.mesh.primitive_cube_add(size=1.0, location=(cx, y_pos, line_z))
+        obj = bpy.context.active_object
+        obj.scale = (0.5 * length, 0.5 * line_w, 0.5 * line_w)
+        obj.name = f"GridLineX_{line_count}"
+        obj.parent = grid_parent
+        obj.data.materials.append(line_mat)
+        line_count += 1
+        y_pos += spacing
+
+    # Lines parallel to Y (varying X)
+    x_start = cx - math.floor((cx - plane_x_lo) / spacing) * spacing
+    x_pos = x_start
+    while x_pos <= plane_x_hi + 1e-8:
+        length = ext_y
+        bpy.ops.mesh.primitive_cube_add(size=1.0, location=(x_pos, cy, line_z))
+        obj = bpy.context.active_object
+        obj.scale = (0.5 * line_w, 0.5 * length, 0.5 * line_w)
+        obj.name = f"GridLineY_{line_count}"
+        obj.parent = grid_parent
+        obj.data.materials.append(line_mat)
+        line_count += 1
+        x_pos += spacing
+
+    print(f"  Grid: {line_count} lines, spacing={spacing:.4f}, line_width={line_w:.4f}")
+
     return plane
 
 
@@ -1037,7 +1108,7 @@ def render_selected_frames(input_dir, output_arg, frame_indices, stream1="cube1"
 
     coverage = compute_frame_coverage(frames1_sel, frames2_sel, y_off1, y_off2, n_selected)
     track_z = (coverage["z_min"] + coverage["z_max"]) * 0.5
-    z_ground = coverage["z_min"] - max(0.02, CFG.checker_z_offset * coverage["z_span"])
+    z_ground = coverage["z_min"] - max(0.02, CFG.grid_z_offset * coverage["z_span"])
 
     aspect = CFG.resolution[0] / CFG.resolution[1]
     if CFG.camera_follow:
@@ -1067,7 +1138,7 @@ def render_selected_frames(input_dir, output_arg, frame_indices, stream1="cube1"
         camera_ortho,
         1e-3,
     )
-    ground_pad = span_xy * max(CFG.checker_cover_scale, 1.0)
+    ground_pad = span_xy * max(CFG.grid_cover_scale, 1.0)
     bg_x_min = min(x_track) - ground_pad
     bg_x_max = max(x_track) + ground_pad
     bg_y_min = min(y_track) - ground_pad
@@ -1079,7 +1150,7 @@ def render_selected_frames(input_dir, output_arg, frame_indices, stream1="cube1"
     print(f"  Coverage X: {coverage['x_min']:.3f} → {coverage['x_max']:.3f}")
     print(f"  Color blending: iters={CFG.color_blend_iters} "
           f"self_weight={CFG.color_blend_self_weight} boundary_w={CFG.boundary_weight}")
-    print(f"  Ground: {'checkerboard' if CFG.checkerboard_enable else 'none'}")
+    print(f"  Ground: {'grid' if CFG.grid_enable else 'none'}")
 
     # ── Scene ─────────────────────────────────────────────────
     clear_scene()
@@ -1095,7 +1166,7 @@ def render_selected_frames(input_dir, output_arg, frame_indices, stream1="cube1"
         x_track[0], y_track[0], track_z, camera_ortho, scene_span, to_camera,
     )
     setup_lights(rig, camera_ortho, cam_distance)
-    create_checkerboard_background(
+    create_grid_ground(
         bg_x_min, bg_x_max,
         bg_y_min, bg_y_max,
         z_ground,
@@ -1180,6 +1251,12 @@ def parse_args():
                     help=f"Smoothing self-retention weight (default: {CFG.color_blend_self_weight}).")
     ap.add_argument("--boundary-weight", type=float, default=None,
                     help=f"Cross-label smoothing weight (default: {CFG.boundary_weight}).")
+    ap.add_argument("--grid-spacing", type=float, default=None,
+                    help="Grid line spacing in scene units (default: auto).")
+    ap.add_argument("--grid-line-width", type=float, default=None,
+                    help=f"Grid line thickness (default: {CFG.grid_line_width}).")
+    ap.add_argument("--no-grid", action="store_true",
+                    help="Disable the grid ground plane.")
     ap.add_argument("--allow-missing-stream", action="store_true")
     args = ap.parse_args(argv)
     if args.resolution is not None: CFG.resolution = tuple(args.resolution)
@@ -1189,6 +1266,9 @@ def parse_args():
     if args.blend_iters is not None:       CFG.color_blend_iters = args.blend_iters
     if args.blend_self_weight is not None: CFG.color_blend_self_weight = args.blend_self_weight
     if args.boundary_weight is not None:   CFG.boundary_weight = args.boundary_weight
+    if args.grid_spacing is not None:      CFG.grid_spacing = args.grid_spacing
+    if args.grid_line_width is not None:   CFG.grid_line_width = args.grid_line_width
+    if args.no_grid:                       CFG.grid_enable = False
     CFG.camera_follow = bool(args.camera_follow)
     CFG.allow_missing_stream = bool(args.allow_missing_stream)
     args.frames = parse_frame_indices(args.frames)
