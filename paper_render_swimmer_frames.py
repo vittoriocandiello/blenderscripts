@@ -1,0 +1,1411 @@
+#!/usr/bin/env python3
+"""
+render_blender_overlay.py — Headless Blender renderer for overlaying selected
+timesteps into a single PNG image.
+
+Usage:
+    blender --background --python render_blender_overlay.py -- \
+        --input preprocessed/ --output renders/overlay.png \
+        --frames 0 64 128 --resolution 1920 1080 --samples 128
+
+`--frames` accepts mixed separators, e.g.:
+    --frames 0 64, 63 34
+"""
+
+import os, sys, glob, argparse, math, tempfile
+import numpy as np
+import bpy
+from mathutils import Vector
+
+
+# ==================================================================
+#  SETTINGS
+# ==================================================================
+
+class Settings:
+
+    # ── Resolution ────────────────────────────────────────────
+    resolution      = (1920, 1080)
+    render_samples  = 64        # 16=test, 128+=final
+    render_engine   = "CYCLES"  # "CYCLES" or "BLENDER_EEVEE_NEXT"
+    use_gpu         = True
+    fps             = 60
+
+    # ── Camera ────────────────────────────────────────────────
+    ortho_padding      = 1.10
+    camera_follow      = False
+    camera_track_alpha = 1.00
+    camera_height_min  = 8.0
+    camera_height_mult = 2.3
+
+    # ── Background ────────────────────────────────────────────
+    world_color      = (1.0, 1.0, 1.0)
+    world_strength   = 0.0
+
+    # ── Grid ground plane ─────────────────────────────────────
+    grid_enable      = True
+    grid_color       = (0.55, 0.55, 0.55)      # thin line color (medium gray)
+    grid_bg_color    = (1.0, 1.0, 1.0)       # ground plane fill (near-white)
+    grid_emission    = 1.0                    # emission strength for ground
+    grid_line_width  = 0.10                  # base line thickness in scene units
+    grid_min_pixels  = 5.0                    # enforce minimum visible line width in pixels
+    grid_spacing     = 1.5                    # auto-computed if None
+    grid_margin      = 0.60
+    grid_cover_scale = 1.30
+    grid_z_offset    = 0.10
+
+    # ── Lighting ──────────────────────────────────────────────
+    key_energy       = 520.0
+    key_color        = (1.0, 0.95, 0.90)    # warm key
+    key_size_factor  = 0.55
+
+    fill_energy      = 130.0
+    fill_color       = (0.90, 0.93, 1.0)    # cool fill
+    fill_size_factor = 0.50
+
+    rim_energy       = 120.0
+    rim_color        = (1.0, 0.97, 0.94)    # warm rim
+    rim_size_factor  = 0.45
+
+    light_spread     = 1.05
+    light_z_factor   = 0.86
+
+    # ── Fish layout ───────────────────────────────────────────
+    fish_y_gap      = 0.0
+    fish_y_lines    = None
+
+    # ── Color themes ──────────────────────────────────────────
+    theme_fish1 = {
+        "name": "StudioBlue",
+        "default": (0.064, 0.176, 0.60),    # body
+        0: (0.72, 0.80, 0.88),              # light blue
+        1: (0.04, 0.04, 0.04),
+        2: (0.15, 0.00, 0.00),
+        3: (0.98, 0.66, 0.22),              # high-contrast golden yellow
+        4: (0.31, 0.10, 0.38),              # deep violet
+        5: (0.18, 0.34, 0.08),              # dark olive green
+        6: (0.08, 0.32, 0.28),              # dark teal
+        7: (0.40, 0.28, 0.04),              # dark amber
+        8: (0.08, 0.30, 0.18),              # dark forest green
+        9: (0.38, 0.08, 0.24),              # deep rose
+        10: (0.42, 0.18, 0.06),             # dark burnt orange
+    }
+
+    theme_fish2 = {
+        "name": "StudioBlue",
+        "default": (0.064, 0.176, 0.60),
+        0: (0.72, 0.80, 0.88),              # light blue
+        1: (0.04, 0.04, 0.04),
+        2: (0.15, 0.00, 0.00),
+        3: (0.98, 0.66, 0.22),
+        4: (0.31, 0.10, 0.38),
+        5: (0.18, 0.34, 0.08),
+        6: (0.08, 0.32, 0.28),
+        7: (0.40, 0.28, 0.04),
+        8: (0.08, 0.30, 0.18),
+        9: (0.38, 0.08, 0.24),
+        10: (0.42, 0.18, 0.06),
+    }
+
+    theme_fish3 = {
+        "name": "StudioBlue",
+        "default": (0.064, 0.176, 0.60),
+        0: (0.72, 0.80, 0.88),              # light blue
+        1: (0.04, 0.04, 0.04),
+        2: (0.15, 0.00, 0.00),
+        3: (0.98, 0.66, 0.22),
+        4: (0.31, 0.10, 0.38),
+        5: (0.18, 0.34, 0.08),
+        6: (0.08, 0.32, 0.28),
+        7: (0.40, 0.28, 0.04),
+        8: (0.08, 0.30, 0.18),
+        9: (0.38, 0.08, 0.24),
+        10: (0.42, 0.18, 0.06),
+    }
+
+    # ── Material ──────────────────────────────────────────────
+    roughness       = 0.85
+    specular        = 0.05
+    metallic        = 0.0
+    emission_body   = 0.005
+    emission_label  = 0.035
+    color_attribute_name = "LabelColor"
+
+    # ── Smoothing controls ────────────────────────────────────
+    color_blend_iters      = 1      # diffusion iterations (0 = no smoothing)
+    color_blend_self_weight = 10.00  # vertex self-retention vs neighbor average
+    boundary_weight        = 0.01    # cross-label edge weight: 0=hard, 1=no distinction
+    color_domain           = "vertex"  # "vertex" for smooth gradients, "face" for flat
+    smooth_shading         = True   # mesh smooth shading
+    auto_smooth_angle      = 48.0   # degrees, for auto-smooth
+
+    # ── Reference lines (invisible) ───────────────────────────
+    line_color      = (0.0, 0.0, 0.0)
+    line_thickness  = 0.0
+    line_extend     = 0.0
+    line_emission   = 0.0
+
+    # ── Color management ──────────────────────────────────────
+    exposure        = 0.0
+    gamma           = 1.0
+
+    # ── Video ─────────────────────────────────────────────────
+    video_codec     = "libx264"
+    video_crf       = 17
+    allow_missing_stream = False
+
+
+CFG = Settings()
+
+
+# ==================================================================
+#  UTILITIES
+# ==================================================================
+
+def clear_scene():
+    bpy.ops.object.select_all(action='SELECT')
+    bpy.ops.object.delete()
+    for b in list(bpy.data.meshes):
+        if b.users == 0: bpy.data.meshes.remove(b)
+    for b in list(bpy.data.materials):
+        if b.users == 0: bpy.data.materials.remove(b)
+    for b in list(bpy.data.lights):
+        if b.users == 0: bpy.data.lights.remove(b)
+    for b in list(bpy.data.cameras):
+        if b.users == 0: bpy.data.cameras.remove(b)
+
+
+def build_metadata_from_frames(frames):
+    bbox_min = np.min([fr["vertices"].min(axis=0) for fr in frames], axis=0).astype(np.float64)
+    bbox_max = np.max([fr["vertices"].max(axis=0) for fr in frames], axis=0).astype(np.float64)
+    labels_all = np.concatenate([fr["labels"].astype(np.int32) for fr in frames], axis=0)
+    unique_labels = np.unique(labels_all).astype(np.int32)
+    return {
+        "n_frames": np.array([len(frames)], dtype=np.int32),
+        "bbox_min": bbox_min,
+        "bbox_max": bbox_max,
+        "unique_labels": unique_labels,
+    }
+
+
+def atomic_savez(path, **arrays):
+    out_dir = os.path.dirname(os.path.abspath(path))
+    os.makedirs(out_dir, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(prefix=".tmp_", suffix=".npz", dir=out_dir)
+    os.close(fd)
+    try:
+        np.savez(tmp_path, **arrays)
+        os.replace(tmp_path, path)
+    except Exception:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
+
+
+def save_metadata(meta_path, frames):
+    meta = build_metadata_from_frames(frames)
+    atomic_savez(meta_path, **meta)
+    return meta
+
+
+def parse_frame_npz(npz_obj, fp, fish_name):
+    required = ("vertices", "triangles", "labels")
+    missing = [k for k in required if k not in npz_obj]
+    if missing:
+        raise ValueError(f"[{fish_name}] {fp} missing keys: {missing}")
+
+    vertices = np.asarray(npz_obj["vertices"], dtype=np.float32)
+    triangles = np.asarray(npz_obj["triangles"], dtype=np.int32)
+    labels = np.asarray(npz_obj["labels"], dtype=np.int32).reshape(-1)
+
+    if vertices.ndim != 2 or vertices.shape[1] < 3:
+        raise ValueError(f"[{fish_name}] invalid vertices in {fp}: {vertices.shape}")
+    if vertices.shape[1] > 3:
+        vertices = vertices[:, :3]
+
+    if triangles.ndim != 2 or triangles.shape[1] != 3:
+        raise ValueError(f"[{fish_name}] invalid triangles in {fp}: {triangles.shape}")
+    if len(triangles) == 0:
+        raise ValueError(f"[{fish_name}] empty triangles in {fp}")
+
+    if len(labels) != len(triangles):
+        if len(labels) == 1:
+            labels = np.full((len(triangles),), int(labels[0]), dtype=np.int32)
+        else:
+            raise ValueError(
+                f"[{fish_name}] label/triangle mismatch in {fp}: "
+                f"{len(labels)} labels vs {len(triangles)} triangles"
+            )
+
+    return {"vertices": vertices, "triangles": triangles, "labels": labels}
+
+
+def load_frames(input_dir, fish_name, allow_missing=False):
+    fish_dir = os.path.join(input_dir, fish_name)
+    if not os.path.isdir(fish_dir):
+        if allow_missing:
+            return [], None
+        raise FileNotFoundError(f"[{fish_name}] directory not found: {fish_dir}")
+
+    frame_paths = sorted(glob.glob(os.path.join(fish_dir, "frame_*.npz")))
+    if not frame_paths:
+        if allow_missing:
+            return [], None
+        raise FileNotFoundError(f"[{fish_name}] no frame_*.npz files in {fish_dir}")
+
+    frames = []
+    for fp in frame_paths:
+        try:
+            with np.load(fp, allow_pickle=False) as d:
+                frames.append(parse_frame_npz(d, fp, fish_name))
+        except Exception as exc:
+            print(f"  [{fish_name}] skipping invalid frame {os.path.basename(fp)} ({exc})")
+
+    if not frames:
+        if allow_missing:
+            return [], None
+        raise ValueError(f"[{fish_name}] no valid frame data in {fish_dir}")
+
+    meta_path = os.path.join(fish_dir, "metadata.npz")
+    meta = None
+    if os.path.isfile(meta_path):
+        try:
+            with np.load(meta_path, allow_pickle=False) as raw_meta:
+                meta = {k: np.asarray(raw_meta[k]) for k in raw_meta.files}
+            required = ("n_frames", "bbox_min", "bbox_max", "unique_labels")
+            if any(k not in meta for k in required):
+                raise ValueError("missing metadata fields")
+            if tuple(np.asarray(meta["bbox_min"]).shape) != (3,) or tuple(np.asarray(meta["bbox_max"]).shape) != (3,):
+                raise ValueError("invalid bbox shape")
+            n_meta = int(np.asarray(meta["n_frames"]).reshape(-1)[0])
+            if n_meta != len(frames):
+                raise ValueError("frame count mismatch")
+        except Exception as exc:
+            print(f"  [{fish_name}] invalid metadata.npz ({exc}); rebuilding.")
+            meta = save_metadata(meta_path, frames)
+    else:
+        print(f"  [{fish_name}] metadata.npz missing; rebuilding from frame files.")
+        meta = save_metadata(meta_path, frames)
+
+    return frames, meta
+
+
+def set_node_input(node, name_or_names, value):
+    names = (name_or_names,) if isinstance(name_or_names, str) else tuple(name_or_names)
+    for nm in names:
+        if nm in node.inputs:
+            node.inputs[nm].default_value = value
+            return True
+    return False
+
+
+def to_rgba(color):
+    c = tuple(color)
+    if len(c) == 4:
+        return c
+    if len(c) == 3:
+        return (c[0], c[1], c[2], 1.0)
+    raise ValueError(f"Expected RGB or RGBA color, got length {len(c)}: {c}")
+
+
+def create_material(name, emission_strength):
+    """Surface material driven by per-vertex/per-corner label colors."""
+    mat = bpy.data.materials.new(name=name)
+    mat.use_nodes = True
+    nodes = mat.node_tree.nodes
+    links = mat.node_tree.links
+
+    for n in list(nodes): nodes.remove(n)
+
+    output = nodes.new("ShaderNodeOutputMaterial")
+    shader_add = nodes.new("ShaderNodeAddShader")
+    principled = nodes.new("ShaderNodeBsdfPrincipled")
+    emission = nodes.new("ShaderNodeEmission")
+    attr = nodes.new("ShaderNodeAttribute")
+    attr.attribute_name = CFG.color_attribute_name
+
+    set_node_input(principled, "Roughness", CFG.roughness)
+    set_node_input(principled, ["Specular IOR Level", "Specular"], CFG.specular)
+    set_node_input(principled, "Metallic", CFG.metallic)
+
+    set_node_input(emission, "Strength", emission_strength)
+
+    links.new(attr.outputs["Color"], principled.inputs["Base Color"])
+    links.new(attr.outputs["Color"], emission.inputs["Color"])
+    links.new(principled.outputs["BSDF"], shader_add.inputs[0])
+    links.new(emission.outputs["Emission"], shader_add.inputs[1])
+    links.new(shader_add.outputs["Shader"], output.inputs["Surface"])
+
+    return mat
+
+
+def build_materials(theme, prefix):
+    return {
+        "theme": theme,
+        "surface": create_material(f"{prefix}_surface", CFG.emission_label),
+    }
+
+
+def mesh_from_arrays(name, vertices, triangles):
+    m = bpy.data.meshes.new(name + "_mesh")
+    obj = bpy.data.objects.new(name, m)
+    bpy.context.collection.objects.link(obj)
+    m.from_pydata(vertices.tolist(), [], triangles.tolist())
+    m.update()
+    return obj
+
+
+def labels_to_face_colors(labels, theme):
+    default = np.asarray(theme.get("default", (0.7, 0.7, 0.7)), dtype=np.float32)
+    labels_i = labels.astype(np.int32, copy=False)
+    face_colors = np.repeat(default[None, :], len(labels_i), axis=0)
+    for lab in np.unique(labels_i):
+        face_colors[labels_i == lab] = np.asarray(theme.get(int(lab), default), dtype=np.float32)
+    return face_colors
+
+
+def triangles_to_edges(triangles):
+    tri = np.asarray(triangles, dtype=np.int64)
+    if len(tri) == 0:
+        return np.empty((0, 2), dtype=np.int64)
+    edges = np.concatenate([tri[:, [0, 1]], tri[:, [1, 2]], tri[:, [2, 0]]], axis=0)
+    edges = np.sort(edges, axis=1)
+    return np.unique(edges, axis=0)
+
+
+# ------------------------------------------------------------------
+#  Vertex-color smoothing (boundary-aware Laplacian diffusion)
+# ------------------------------------------------------------------
+
+def _build_edge_weights(triangles, labels, n_verts, boundary_weight):
+    tri = np.asarray(triangles, dtype=np.int64)
+    lab = np.asarray(labels, dtype=np.int32)
+
+    he_v0 = np.concatenate([tri[:, 0], tri[:, 1], tri[:, 2]])
+    he_v1 = np.concatenate([tri[:, 1], tri[:, 2], tri[:, 0]])
+    he_lab = np.tile(lab, 3)
+
+    swap = he_v0 > he_v1
+    he_v0_s = np.where(swap, he_v1, he_v0)
+    he_v1_s = np.where(swap, he_v0, he_v1)
+
+    max_v = n_verts + 1
+    edge_key = he_v0_s * max_v + he_v1_s
+
+    order = np.argsort(edge_key)
+    ek_sorted = edge_key[order]
+    lab_sorted = he_lab[order]
+    v0_sorted = he_v0_s[order]
+    v1_sorted = he_v1_s[order]
+
+    unique_mask = np.empty(len(ek_sorted), dtype=bool)
+    unique_mask[0] = True
+    unique_mask[1:] = ek_sorted[1:] != ek_sorted[:-1]
+    u_idx = np.where(unique_mask)[0]
+
+    u_v0 = v0_sorted[u_idx]
+    u_v1 = v1_sorted[u_idx]
+
+    next_idx = np.minimum(u_idx + 1, len(ek_sorted) - 1)
+    is_interior = (ek_sorted[next_idx] == ek_sorted[u_idx])
+    lab_a = lab_sorted[u_idx]
+    lab_b = lab_sorted[next_idx]
+    same_label = (~is_interior) | (lab_a == lab_b)
+
+    bw = float(np.clip(boundary_weight, 0.0, 1.0))
+    edge_w = np.where(same_label, 1.0, bw).astype(np.float32)
+
+    return u_v0, u_v1, edge_w
+
+
+def blend_vertex_colors_boundary_aware(vertex_colors, triangles, labels,
+                                        iters, self_weight, boundary_weight):
+    if iters <= 0 or len(vertex_colors) == 0:
+        return vertex_colors.copy()
+
+    n_verts = len(vertex_colors)
+    u_v0, u_v1, edge_w = _build_edge_weights(triangles, labels, n_verts, boundary_weight)
+
+    if len(u_v0) == 0:
+        return vertex_colors.copy()
+
+    cur = vertex_colors.astype(np.float32, copy=True)
+    sw = float(max(self_weight, 0.0))
+    ew3 = edge_w[:, None]
+
+    for _ in range(int(iters)):
+        nb_sum = np.zeros_like(cur)
+        w_sum = np.zeros((n_verts, 1), dtype=np.float32)
+
+        np.add.at(nb_sum, u_v0, cur[u_v1] * ew3)
+        np.add.at(nb_sum, u_v1, cur[u_v0] * ew3)
+        np.add.at(w_sum[:, 0], u_v0, edge_w)
+        np.add.at(w_sum[:, 0], u_v1, edge_w)
+
+        nb_avg = nb_sum / np.maximum(w_sum, 1e-8)
+        cur = (sw * cur + nb_avg) / (sw + 1.0)
+
+    return np.clip(cur, 0.0, 1.0)
+
+
+# ------------------------------------------------------------------
+#  Color attribute writing
+# ------------------------------------------------------------------
+
+def set_mesh_vertex_colors(mesh, vertex_colors, attr_name):
+    attrs = mesh.color_attributes
+    attr = attrs.get(attr_name)
+    if attr is not None:
+        attrs.remove(attr)
+    attr = attrs.new(name=attr_name, type="FLOAT_COLOR", domain="POINT")
+
+    n_verts = len(mesh.vertices)
+    if n_verts == 0:
+        return
+
+    rgba = np.empty((n_verts, 4), dtype=np.float32)
+    rgba[:, :3] = vertex_colors[:n_verts]
+    rgba[:, 3] = 1.0
+    attr.data.foreach_set("color", rgba.reshape(-1))
+
+
+def set_mesh_face_colors(mesh, face_colors, attr_name):
+    attrs = mesh.color_attributes
+    attr = attrs.get(attr_name)
+    if attr is not None:
+        attrs.remove(attr)
+    attr = attrs.new(name=attr_name, type="FLOAT_COLOR", domain="CORNER")
+
+    n_loops = len(mesh.loops)
+    if n_loops == 0:
+        return
+
+    loop_colors = np.repeat(face_colors, 3, axis=0)
+    rgba = np.empty((n_loops, 4), dtype=np.float32)
+    rgba[:, :3] = loop_colors[:n_loops]
+    rgba[:, 3] = 1.0
+    attr.data.foreach_set("color", rgba.reshape(-1))
+
+
+# ------------------------------------------------------------------
+#  Material + color assignment
+# ------------------------------------------------------------------
+
+def assign_materials(obj, labels, materials_dict):
+    mesh = obj.data
+    n_polys = len(mesh.polygons)
+    if len(labels) != n_polys:
+        raise ValueError(
+            f"{obj.name}: {len(labels)} labels for {n_polys} polygons"
+        )
+
+    theme = materials_dict["theme"]
+    surface_mat = materials_dict["surface"]
+    if len(obj.data.materials) == 0 or obj.data.materials[0] is not surface_mat:
+        obj.data.materials.clear()
+        obj.data.materials.append(surface_mat)
+
+    face_colors = labels_to_face_colors(labels, theme)
+
+    if CFG.color_domain == "face" or CFG.color_blend_iters <= 0:
+        set_mesh_face_colors(mesh, face_colors, CFG.color_attribute_name)
+        return
+
+    triangles = np.array([poly.vertices[:] for poly in mesh.polygons], dtype=np.int64)
+    n_verts = len(mesh.vertices)
+    vcols = np.zeros((n_verts, 3), dtype=np.float32)
+    counts = np.zeros((n_verts, 1), dtype=np.float32)
+    for k in range(3):
+        idx = triangles[:, k]
+        np.add.at(vcols, idx, face_colors)
+        np.add.at(counts[:, 0], idx, 1.0)
+    vcols /= np.maximum(counts, 1.0)
+
+    vcols = blend_vertex_colors_boundary_aware(
+        vcols, triangles, labels,
+        CFG.color_blend_iters,
+        CFG.color_blend_self_weight,
+        CFG.boundary_weight,
+    )
+
+    set_mesh_vertex_colors(mesh, vcols, CFG.color_attribute_name)
+
+
+def update_mesh(obj, vertices, triangles):
+    old = obj.data
+    new = bpy.data.meshes.new(obj.name + "_tmp")
+    new.from_pydata(vertices.tolist(), [], triangles.tolist())
+    new.update()
+    obj.data = new
+    bpy.data.meshes.remove(old)
+
+
+def ensure_outward_normals(obj):
+    mesh = obj.data
+    if len(mesh.polygons) == 0:
+        return
+    verts = np.array([v.co[:] for v in mesh.vertices], dtype=np.float64)
+    tris = np.array([p.vertices[:] for p in mesh.polygons], dtype=np.int64)
+    tri = verts[tris]
+    normals = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+    centers = tri.mean(axis=1)
+    centroid = verts.mean(axis=0)
+    orient_score = np.mean(np.einsum("ij,ij->i", normals, centers - centroid))
+    if orient_score < 0:
+        mesh.flip_normals()
+        mesh.update()
+
+
+def apply_surface_shading(obj):
+    use_smooth = CFG.smooth_shading
+    for poly in obj.data.polygons:
+        poly.use_smooth = use_smooth
+    if use_smooth and hasattr(obj.data, "use_auto_smooth"):
+        obj.data.use_auto_smooth = True
+        obj.data.auto_smooth_angle = math.radians(CFG.auto_smooth_angle)
+
+
+def smooth_track(values, alpha):
+    if not values:
+        return []
+    a = min(max(alpha, 0.0), 1.0)
+    out = [values[0]]
+    cur = values[0]
+    for v in values[1:]:
+        cur = a * v + (1.0 - a) * cur
+        out.append(cur)
+    return out
+
+
+def robust_y_span(frames, percentile=95.0):
+    spans = []
+    for fr in frames:
+        vy = fr["vertices"][:, 1]
+        spans.append(float(vy.max() - vy.min()))
+    if not spans:
+        return 1.0
+    return float(np.percentile(np.array(spans), percentile))
+
+
+def robust_center_y(frames):
+    centers = []
+    for fr in frames:
+        centers.append(float(np.median(fr["vertices"][:, 1])))
+    if not centers:
+        return 0.0
+    return float(np.median(np.array(centers)))
+
+
+def compute_frame_coverage(frame_streams, y_offsets, n):
+    if len(frame_streams) != len(y_offsets):
+        raise ValueError("compute_frame_coverage: stream/offset size mismatch")
+    if not frame_streams:
+        raise ValueError("compute_frame_coverage: no frame streams provided")
+
+    frame_centers_x = []
+    frame_centers_y = []
+    frame_x_min = []
+    frame_x_max = []
+    frame_y_min = []
+    frame_y_max = []
+    x_min = float("inf")
+    x_max = float("-inf")
+    y_min = float("inf")
+    y_max = float("-inf")
+    z_min = float("inf")
+    z_max = float("-inf")
+    max_span_x = 0.0
+    max_span_y = 0.0
+
+    for fi in range(n):
+        mins = []
+        maxs = []
+        for frames, y_off in zip(frame_streams, y_offsets):
+            verts = frames[fi]["vertices"]
+            mn = verts.min(axis=0).astype(np.float64)
+            mx = verts.max(axis=0).astype(np.float64)
+            mn[1] += y_off
+            mx[1] += y_off
+            mins.append(mn)
+            maxs.append(mx)
+
+        fmin = np.min(np.stack(mins, axis=0), axis=0)
+        fmax = np.max(np.stack(maxs, axis=0), axis=0)
+        span = fmax - fmin
+
+        frame_centers_x.append(float((fmin[0] + fmax[0]) * 0.5))
+        frame_centers_y.append(float((fmin[1] + fmax[1]) * 0.5))
+        frame_x_min.append(float(fmin[0]))
+        frame_x_max.append(float(fmax[0]))
+        frame_y_min.append(float(fmin[1]))
+        frame_y_max.append(float(fmax[1]))
+        x_min = min(x_min, float(fmin[0]))
+        x_max = max(x_max, float(fmax[0]))
+        y_min = min(y_min, float(fmin[1]))
+        y_max = max(y_max, float(fmax[1]))
+        z_min = min(z_min, float(fmin[2]))
+        z_max = max(z_max, float(fmax[2]))
+        max_span_x = max(max_span_x, float(span[0]))
+        max_span_y = max(max_span_y, float(span[1]))
+
+    aspect = CFG.resolution[0] / CFG.resolution[1]
+    ortho_scale = max(
+        max_span_x * CFG.ortho_padding,
+        max_span_y * CFG.ortho_padding * aspect,
+        1e-3,
+    )
+
+    return {
+        "frame_centers_x": frame_centers_x,
+        "frame_centers_y": frame_centers_y,
+        "frame_x_min": frame_x_min,
+        "frame_x_max": frame_x_max,
+        "frame_y_min": frame_y_min,
+        "frame_y_max": frame_y_max,
+        "x_min": x_min,
+        "x_max": x_max,
+        "y_min": y_min,
+        "y_max": y_max,
+        "z_min": z_min,
+        "z_max": z_max,
+        "z_span": max(z_max - z_min, 1e-3),
+        "ortho_scale": ortho_scale,
+    }
+
+
+def compute_required_ortho_scale(coverage, x_track, y_track, aspect, padding):
+    if aspect <= 0:
+        aspect = 1.0
+    pad = max(float(padding), 1.0)
+    required = 1e-3
+    for fi, (cx, cy) in enumerate(zip(x_track, y_track)):
+        half_x = max(
+            cx - coverage["frame_x_min"][fi],
+            coverage["frame_x_max"][fi] - cx,
+        )
+        half_y = max(
+            cy - coverage["frame_y_min"][fi],
+            coverage["frame_y_max"][fi] - cy,
+        )
+        required = max(required, max(2.0 * half_x, 2.0 * half_y * aspect))
+    return max(required * pad, 1e-3)
+
+
+# ==================================================================
+#  SCENE SETUP
+# ==================================================================
+
+def setup_world():
+    world = bpy.context.scene.world
+    if world is None:
+        world = bpy.data.worlds.new("World")
+        bpy.context.scene.world = world
+    world.use_nodes = True
+    nodes = world.node_tree.nodes
+    links = world.node_tree.links
+    nodes.clear()
+    bg = nodes.new("ShaderNodeBackground")
+    out = nodes.new("ShaderNodeOutputWorld")
+    links.new(bg.outputs["Background"], out.inputs["Surface"])
+    bg.inputs["Color"].default_value = (*CFG.world_color, 1.0)
+    bg.inputs["Strength"].default_value = CFG.world_strength
+
+
+def setup_camera(track_x0, track_y, track_z, ortho_scale, z_span):
+    rig = bpy.data.objects.new("CameraRig", None)
+    bpy.context.collection.objects.link(rig)
+    rig.location = Vector((track_x0, track_y, track_z))
+
+    cam_data = bpy.data.cameras.new("Camera")
+    cam_obj = bpy.data.objects.new("Camera", cam_data)
+    bpy.context.collection.objects.link(cam_obj)
+    bpy.context.scene.camera = cam_obj
+    cam_obj.parent = rig
+
+    cam_data.type = "ORTHO"
+    cam_data.sensor_fit = "HORIZONTAL"
+    cam_data.ortho_scale = ortho_scale
+
+    cam_height = max(
+        CFG.camera_height_min,
+        z_span * CFG.camera_height_mult,
+        ortho_scale * 2.0,
+    )
+    cam_obj.location = Vector((0.0, 0.0, cam_height))
+    cam_obj.rotation_euler = (0, 0, 0)
+
+    cam_data.clip_start = 0.01
+    cam_data.clip_end = max(1000.0, cam_height * 40.0)
+
+    return rig, cam_obj, cam_height
+
+
+def setup_lights(rig, ortho_scale, cam_height):
+    spread = max(ortho_scale * CFG.light_spread, 3.0)
+    base_size = max(ortho_scale * 0.75, 1.5)
+    light_z = max(cam_height * CFG.light_z_factor, spread * 1.2)
+    energy_scale = max((ortho_scale / 6.0) ** 2, 0.35)
+
+    def add_light(name, energy, color, size_factor, offset):
+        ld = bpy.data.lights.new(name, 'AREA')
+        ld.energy = energy * energy_scale
+        ld.color = color
+        ld.shape = 'DISK'
+        ld.size = base_size * size_factor
+        lo = bpy.data.objects.new(name, ld)
+        bpy.context.collection.objects.link(lo)
+        lo.parent = rig
+        lo.location = Vector((offset[0], offset[1], light_z + offset[2]))
+        lo.rotation_euler = (0, 0, 0)
+        return lo
+
+    add_light("Key", CFG.key_energy, CFG.key_color, CFG.key_size_factor,
+              (-spread * 0.40, -spread * 0.40, 0.0))
+    add_light("Fill", CFG.fill_energy, CFG.fill_color, CFG.fill_size_factor,
+              (spread * 0.42, spread * 0.12, -spread * 0.12))
+    add_light("Rim", CFG.rim_energy, CFG.rim_color, CFG.rim_size_factor,
+              (0.0, spread * 0.52, -spread * 0.18))
+
+
+def create_reference_line(x_min, x_max, y_pos, z_pos):
+    x_ext = max(x_max - x_min, 1e-3)
+    x_lo = x_min - x_ext * CFG.line_extend
+    x_hi = x_max + x_ext * CFG.line_extend
+    length = max(x_hi - x_lo, 1e-3)
+    cx = (x_lo + x_hi) / 2.0
+
+    bpy.ops.mesh.primitive_cylinder_add(
+        radius=CFG.line_thickness, depth=length,
+        location=(cx, y_pos, z_pos),
+        rotation=(0, math.pi / 2, 0),
+    )
+    line = bpy.context.active_object
+    line.name = f"Line_y{y_pos:.3f}"
+    mat = bpy.data.materials.new(f"LineMat_{y_pos:.3f}")
+    mat.use_nodes = True
+    nodes = mat.node_tree.nodes
+    links = mat.node_tree.links
+    for n in list(nodes):
+        nodes.remove(n)
+    out = nodes.new("ShaderNodeOutputMaterial")
+    em = nodes.new("ShaderNodeEmission")
+    set_node_input(em, "Color", to_rgba(CFG.line_color))
+    set_node_input(em, "Strength", CFG.line_emission)
+    links.new(em.outputs["Emission"], out.inputs["Surface"])
+    line.data.materials.append(mat)
+    return line
+
+
+def _create_grid_line_material():
+    """Shared emissive material for all grid lines."""
+    mat = bpy.data.materials.new("GridLineMat")
+    mat.use_nodes = True
+    nodes = mat.node_tree.nodes
+    links = mat.node_tree.links
+    for n in list(nodes):
+        nodes.remove(n)
+    out = nodes.new("ShaderNodeOutputMaterial")
+    em = nodes.new("ShaderNodeEmission")
+    set_node_input(em, "Color", to_rgba(CFG.grid_color))
+    set_node_input(em, "Strength", CFG.grid_emission)
+    links.new(em.outputs["Emission"], out.inputs["Surface"])
+    return mat
+
+
+def _create_grid_ground_material():
+    """Flat emissive material for the ground plane background."""
+    mat = bpy.data.materials.new("GridGroundMat")
+    mat.use_nodes = True
+    nodes = mat.node_tree.nodes
+    links = mat.node_tree.links
+    for n in list(nodes):
+        nodes.remove(n)
+    out = nodes.new("ShaderNodeOutputMaterial")
+    em = nodes.new("ShaderNodeEmission")
+    set_node_input(em, "Color", to_rgba(CFG.grid_bg_color))
+    set_node_input(em, "Strength", CFG.grid_emission)
+    links.new(em.outputs["Emission"], out.inputs["Surface"])
+    return mat
+
+
+def create_grid_ground(x_min, x_max, y_min, y_max, z_pos, camera_ortho=None):
+    """Ground plane with a regular grid of thin lines, suitable for thesis figures.
+
+    Creates a flat background plane and overlays thin box-shaped lines along
+    both the X and Y directions at uniform spacing.
+    """
+    if not CFG.grid_enable:
+        return None
+
+    span_x = max(x_max - x_min, 1e-3)
+    span_y = max(y_max - y_min, 1e-3)
+    ext_x = span_x * (1.0 + 2.0 * CFG.grid_margin)
+    ext_y = span_y * (1.0 + 2.0 * CFG.grid_margin)
+    cx = 0.5 * (x_min + x_max)
+    cy = 0.5 * (y_min + y_max)
+
+    # Determine grid spacing: use user value or auto-compute from scene extent
+    if CFG.grid_spacing is not None and CFG.grid_spacing > 0:
+        spacing = CFG.grid_spacing
+    else:
+        shorter = min(ext_x, ext_y)
+        spacing = shorter / 14.0
+
+    # Keep thin lines visible in orthographic renders by clamping to a
+    # minimum on-screen pixel width.
+    if camera_ortho is not None and camera_ortho > 0:
+        visible_width = float(camera_ortho)
+    else:
+        visible_width = max(x_max - x_min, 1e-6)
+    px_world = visible_width / max(int(CFG.resolution[0]), 1)
+
+    # Plane bounds with margin
+    plane_x_lo = cx - 0.5 * ext_x
+    plane_x_hi = cx + 0.5 * ext_x
+    plane_y_lo = cy - 0.5 * ext_y
+    plane_y_hi = cy + 0.5 * ext_y
+
+    # ── Background plane ──────────────────────────────────────
+    bpy.ops.mesh.primitive_plane_add(size=1.0, location=(cx, cy, z_pos))
+    plane = bpy.context.active_object
+    plane.name = "GridGround"
+    plane.scale = (0.5 * ext_x, 0.5 * ext_y, 1.0)
+    ground_mat = _create_grid_ground_material()
+    plane.data.materials.append(ground_mat)
+
+    # ── Grid lines ────────────────────────────────────────────
+    # Lines are flat on the XY plane: thin in one horizontal direction,
+    # long in the other, and with a small Z thickness to sit above the ground.
+    line_mat = _create_grid_line_material()
+    line_w = max(
+        CFG.grid_line_width,
+        px_world * max(float(CFG.grid_min_pixels), 0.0),
+        1e-5,
+    )
+    line_px = line_w / max(px_world, 1e-8)
+    line_h = line_w * 0.5  # Z thickness (thin slab)
+    line_z = z_pos + 0.005 + line_h * 0.5  # lift above ground to avoid z-fighting
+
+    # Collect all line objects under an empty for tidiness
+    grid_parent = bpy.data.objects.new("GridLines", None)
+    bpy.context.collection.objects.link(grid_parent)
+
+    line_count = 0
+
+    # Lines parallel to X (varying Y): long in X, thin in Y, slab in Z
+    y_start = cy - math.floor((cy - plane_y_lo) / spacing) * spacing
+    y_pos_iter = y_start
+    while y_pos_iter <= plane_y_hi + 1e-8:
+        length = ext_x
+        bpy.ops.mesh.primitive_cube_add(size=1.0, location=(cx, y_pos_iter, line_z))
+        obj = bpy.context.active_object
+        obj.scale = (0.5 * length, 0.5 * line_w, 0.5 * line_h)
+        obj.name = f"GridLineX_{line_count}"
+        obj.parent = grid_parent
+        obj.data.materials.append(line_mat)
+        line_count += 1
+        y_pos_iter += spacing
+
+    # Lines parallel to Y (varying X): long in Y, thin in X, slab in Z
+    x_start = cx - math.floor((cx - plane_x_lo) / spacing) * spacing
+    x_pos_iter = x_start
+    while x_pos_iter <= plane_x_hi + 1e-8:
+        length = ext_y
+        bpy.ops.mesh.primitive_cube_add(size=1.0, location=(x_pos_iter, cy, line_z))
+        obj = bpy.context.active_object
+        obj.scale = (0.5 * line_w, 0.5 * length, 0.5 * line_h)
+        obj.name = f"GridLineY_{line_count}"
+        obj.parent = grid_parent
+        obj.data.materials.append(line_mat)
+        line_count += 1
+        x_pos_iter += spacing
+
+    print(
+        f"  Grid: {line_count} lines, spacing={spacing:.4f}, "
+        f"line_width={line_w:.4f} (~{line_px:.2f}px)"
+    )
+
+    return plane
+
+
+def setup_render():
+    scene = bpy.context.scene
+    scene.render.engine = CFG.render_engine
+    scene.render.resolution_x = CFG.resolution[0]
+    scene.render.resolution_y = CFG.resolution[1]
+    scene.render.resolution_percentage = 100
+    scene.render.image_settings.file_format = "PNG"
+    scene.render.film_transparent = False
+    scene.render.use_motion_blur = False
+
+    for vt in ("Standard", "AgX", "Filmic"):
+        try:
+            scene.view_settings.view_transform = vt
+            break
+        except Exception:
+            continue
+    for lk in ("High Contrast", "Medium High Contrast", "Medium Contrast", "None"):
+        try:
+            scene.view_settings.look = lk
+            break
+        except Exception:
+            continue
+    scene.view_settings.exposure = CFG.exposure
+    scene.view_settings.gamma = CFG.gamma
+
+    if CFG.render_engine == "CYCLES":
+        scene.cycles.samples = CFG.render_samples
+        scene.cycles.use_denoising = True
+        if hasattr(scene.cycles, "use_adaptive_sampling"):
+            scene.cycles.use_adaptive_sampling = True
+        if hasattr(scene.cycles, "adaptive_threshold"):
+            scene.cycles.adaptive_threshold = 0.015
+        if CFG.use_gpu:
+            prefs = bpy.context.preferences.addons.get("cycles")
+            if prefs:
+                cp = prefs.preferences
+                for ct in ["OPTIX", "CUDA", "HIP", "METAL"]:
+                    try:
+                        cp.compute_device_type = ct; cp.get_devices()
+                        for d in cp.devices: d.use = True
+                        scene.cycles.device = 'GPU'
+                        print(f"  GPU: {ct}"); break
+                    except: continue
+                else:
+                    print("  No GPU, using CPU"); scene.cycles.device = 'CPU'
+    elif "EEVEE" in CFG.render_engine:
+        if hasattr(scene, 'eevee'):
+            scene.eevee.taa_render_samples = CFG.render_samples
+
+    scene.render.fps = CFG.fps
+
+
+# ==================================================================
+#  MAIN RENDER
+# ==================================================================
+
+def clone_stream(frames, meta):
+    frames_out = []
+    for fr in frames:
+        frames_out.append({
+            "vertices": fr["vertices"].copy(),
+            "triangles": fr["triangles"].copy(),
+            "labels": fr["labels"].copy(),
+        })
+    meta_out = {
+        "n_frames": np.array([len(frames_out)], dtype=np.int32),
+        "bbox_min": np.asarray(meta["bbox_min"], dtype=np.float64).copy(),
+        "bbox_max": np.asarray(meta["bbox_max"], dtype=np.float64).copy(),
+        "unique_labels": np.asarray(meta["unique_labels"], dtype=np.int32).copy(),
+    }
+    return frames_out, meta_out
+
+
+def parse_frame_indices(raw_values):
+    frame_indices = []
+    for token in raw_values:
+        for part in token.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                frame_indices.append(int(part))
+            except ValueError as exc:
+                raise ValueError(
+                    f"Invalid frame index '{part}' in --frames. "
+                    "Use integers separated by spaces and/or commas."
+                ) from exc
+    if not frame_indices:
+        raise ValueError("No valid frame indices provided in --frames.")
+    return frame_indices
+
+
+def sanitize_frame_indices(frame_indices, n_frames):
+    selected = []
+    seen = set()
+    for idx in frame_indices:
+        resolved = idx if idx >= 0 else (n_frames + idx)
+        if resolved < 0 or resolved >= n_frames:
+            raise IndexError(
+                f"Frame index {idx} is out of range for {n_frames} frames "
+                "(valid range: 0..{n_frames - 1}, negatives allowed)."
+            )
+        if resolved in seen:
+            continue
+        selected.append(resolved)
+        seen.add(resolved)
+    if not selected:
+        raise ValueError("No unique frame indices left after validation.")
+    return selected
+
+
+def resolve_output_png_path(output_arg):
+    if output_arg.lower().endswith(".png"):
+        output_path = output_arg
+    else:
+        os.makedirs(output_arg, exist_ok=True)
+        output_path = os.path.join(output_arg, "overlay_frames.png")
+    out_dir = os.path.dirname(os.path.abspath(output_path))
+    os.makedirs(out_dir, exist_ok=True)
+    return output_path
+
+
+def resolve_swimmer_input_roots(input_dir):
+    """
+    Resolve roots for:
+      - swimmercoseq/fish1
+      - swimmercoseq/fish2
+      - swimmerbfnn/fish2
+
+    Supported --input forms:
+      1) preprocessed
+      2) preprocessed/swimmercoseq
+    """
+    root = os.path.abspath(input_dir)
+    base = os.path.basename(os.path.normpath(root))
+
+    if base == "preprocessed":
+        seq_root = os.path.join(root, "swimmercoseq")
+        bfnn_root = os.path.join(root, "swimmerbfnn")
+    elif base == "swimmercoseq":
+        seq_root = root
+        bfnn_root = os.path.join(os.path.dirname(root), "swimmerbfnn")
+    else:
+        seq_root = root
+        bfnn_root = os.path.join(os.path.dirname(root), "swimmerbfnn")
+
+    return seq_root, bfnn_root
+
+
+def render_overlay(input_dir, output_arg, frame_indices):
+    output_path = resolve_output_png_path(output_arg)
+
+    seq_root, bfnn_root = resolve_swimmer_input_roots(input_dir)
+    stream_specs = [
+        {
+            "name": "fish1",
+            "obj_prefix": "Fish1",
+            "theme": CFG.theme_fish1,
+            "root": seq_root,
+            "stream": "fish1",
+            "display": "swimmercoseq/fish1",
+        },
+        {
+            "name": "fish2",
+            "obj_prefix": "Fish2",
+            "theme": CFG.theme_fish2,
+            "root": seq_root,
+            "stream": "fish2",
+            "display": "swimmercoseq/fish2",
+        },
+        {
+            "name": "fish3",
+            "obj_prefix": "Fish3",
+            "theme": CFG.theme_fish3,
+            "root": bfnn_root,
+            "stream": "fish2",
+            "display": "swimmerbfnn/fish2",
+        },
+    ]
+
+    loaded = []
+    for spec in stream_specs:
+        stream_dir = os.path.join(spec["root"], spec["stream"])
+        print(f"Loading {spec['display']} ({stream_dir})...")
+        frames, meta = load_frames(spec["root"], spec["stream"], allow_missing=True)
+        loaded.append({"spec": spec, "frames": frames, "meta": meta})
+
+    if all(not item["frames"] for item in loaded):
+        raise FileNotFoundError(
+            "No swimmer streams found.\n"
+            f"  Expected: {os.path.join(seq_root, 'fish1')}\n"
+            f"  Expected: {os.path.join(seq_root, 'fish2')}\n"
+            f"  Expected: {os.path.join(bfnn_root, 'fish2')}"
+        )
+
+    missing = [item for item in loaded if not item["frames"]]
+    if missing:
+        if not CFG.allow_missing_stream:
+            missing_names = ", ".join(item["spec"]["display"] for item in missing)
+            raise FileNotFoundError(
+                f"Missing required stream(s): {missing_names}. "
+                "Run preprocess for all streams, or pass --allow-missing-stream."
+            )
+
+        donor = next((item for item in loaded if item["frames"]), None)
+        if donor is None:
+            raise ValueError("No donor stream available to duplicate missing streams.")
+        for item in missing:
+            print(
+                f"  [{item['spec']['display']}] missing: duplicating "
+                f"{donor['spec']['display']} (--allow-missing-stream enabled)."
+            )
+            item["frames"], item["meta"] = clone_stream(donor["frames"], donor["meta"])
+
+    stream_frames = [item["frames"] for item in loaded]
+    stream_lengths = [len(frames) for frames in stream_frames]
+    n_total = min(stream_lengths)
+    if len(set(stream_lengths)) != 1:
+        msg = "  Frame-count mismatch: " + " ".join(
+            f"{item['spec']['display']}={len(item['frames'])}" for item in loaded
+        ) + f"; truncating to {n_total}"
+        print(msg)
+    if n_total == 0:
+        raise ValueError("No frames available to render.")
+
+    selected = sanitize_frame_indices(frame_indices, n_total)
+    n_selected = len(selected)
+    print(f"Selected {n_selected} frame(s): {selected}")
+
+    selected_stream_frames = []
+    for frames in stream_frames:
+        selected_stream_frames.append([frames[fi] for fi in selected])
+
+    # ── Stream placement (overlay-style lanes) ───────────────
+    n_streams = len(stream_frames)
+    y_centers = [robust_center_y(frames) for frames in stream_frames]
+    first_frame_centers = [
+        float(np.median(frames[selected[0]]["vertices"][:, 1]))
+        for frames in stream_frames
+    ]
+
+    if CFG.fish_y_lines is not None:
+        if len(CFG.fish_y_lines) != n_streams:
+            raise ValueError(
+                f"--y expects {n_streams} values for this render, got {len(CFG.fish_y_lines)}."
+            )
+        y_lines = [float(v) for v in CFG.fish_y_lines]
+        print("  Lane Y positions (manual): " + " ".join(f"{v:+.4f}" for v in y_lines))
+        y_offsets = [line - center for line, center in zip(y_lines, first_frame_centers)]
+    else:
+        if CFG.fish_y_gap <= 0:
+            y_ext = max(robust_y_span(frames) for frames in stream_frames)
+            CFG.fish_y_gap = y_ext * 1.35
+        mid = 0.5 * (n_streams - 1)
+        y_lines = [(mid - i) * CFG.fish_y_gap for i in range(n_streams)]
+        print(f"  Lane gap: {CFG.fish_y_gap:.4f}")
+        y_offsets = [line - center for line, center in zip(y_lines, y_centers)]
+
+    print("  Y offsets: " + "  ".join(
+        f"fish{i + 1}={off:+.4f}" for i, off in enumerate(y_offsets)
+    ))
+
+    coverage = compute_frame_coverage(selected_stream_frames, y_offsets, n_selected)
+    track_z = (coverage["z_min"] + coverage["z_max"]) * 0.5
+    z_ground = coverage["z_min"] - max(0.05, CFG.grid_z_offset * coverage["z_span"])
+    z_line = coverage["z_max"] + max(0.02, coverage["z_span"] * 0.01)
+
+    aspect = CFG.resolution[0] / CFG.resolution[1]
+    x_fixed = 0.5 * (coverage["x_min"] + coverage["x_max"])
+    y_fixed = float(np.mean(np.asarray(y_lines, dtype=np.float64)))
+    x_track = [x_fixed] * n_selected
+    y_track = [y_fixed] * n_selected
+    camera_ortho = max(
+        coverage["ortho_scale"],
+        compute_required_ortho_scale(
+            coverage, x_track, y_track, aspect, CFG.ortho_padding
+        ),
+    )
+
+    cam_half_x = 0.5 * camera_ortho
+    cam_half_y = cam_half_x / aspect
+    cover = max(CFG.grid_cover_scale, 1.0)
+    bg_half_x = cam_half_x * cover
+    bg_half_y = cam_half_y * cover
+    bg_x_min = x_fixed - bg_half_x
+    bg_x_max = x_fixed + bg_half_x
+    bg_y_min = y_fixed - bg_half_y
+    bg_y_max = y_fixed + bg_half_y
+
+    print(f"  Camera mode: fixed")
+    print(f"  Ortho scale: {camera_ortho:.3f}")
+    print(f"  Coverage X: {coverage['x_min']:.3f} → {coverage['x_max']:.3f}")
+    print(f"  Smoothing: domain={CFG.color_domain}  iters={CFG.color_blend_iters}  "
+          f"self_w={CFG.color_blend_self_weight}  boundary_w={CFG.boundary_weight}")
+    print(f"  Mesh shading: {'smooth' if CFG.smooth_shading else 'flat'}")
+    print(f"  Ground: {'grid' if CFG.grid_enable else 'none'}")
+
+    # ── Scene ─────────────────────────────────────────────────
+    clear_scene()
+    setup_world()
+    setup_render()
+    rig, _cam, cam_height = setup_camera(
+        x_fixed, y_fixed, track_z, camera_ortho, coverage["z_span"],
+    )
+    setup_lights(rig, camera_ortho, cam_height)
+    create_grid_ground(
+        bg_x_min, bg_x_max,
+        bg_y_min, bg_y_max,
+        z_ground,
+        camera_ortho=camera_ortho,
+    )
+
+    for y_line in y_lines:
+        create_reference_line(coverage["x_min"], coverage["x_max"], y_line, z_line)
+
+    stream_render_specs = []
+    for item, y_off in zip(loaded, y_offsets):
+        spec = item["spec"]
+        stream_render_specs.append({
+            "name": spec["name"],
+            "obj_prefix": spec["obj_prefix"],
+            "frames": item["frames"],
+            "y_off": y_off,
+            "materials": build_materials(spec["theme"], spec["name"]),
+        })
+
+    for fi in selected:
+        for stream in stream_render_specs:
+            fr = stream["frames"][fi]
+            verts = fr["vertices"].copy()
+            verts[:, 1] += stream["y_off"]
+
+            obj = mesh_from_arrays(
+                f"{stream['obj_prefix']}_{fi:05d}",
+                verts,
+                fr["triangles"],
+            )
+            ensure_outward_normals(obj)
+            assign_materials(obj, fr["labels"], stream["materials"])
+            apply_surface_shading(obj)
+
+    rig.location.x = x_fixed
+    rig.location.y = y_fixed
+    rig.location.z = track_z
+
+    bpy.context.scene.render.filepath = output_path
+    bpy.ops.render.render(write_still=True)
+    print(f"\nOverlay image written to {output_path}")
+    return output_path
+
+
+# ==================================================================
+#  CLI
+# ==================================================================
+
+def parse_args():
+    argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
+    ap = argparse.ArgumentParser(
+        description="Render selected timesteps overlaid into a single PNG."
+    )
+    ap.add_argument(
+        "--input",
+        required=True,
+        help=(
+            "Input root. Supports either preprocessed/ or preprocessed/swimmercoseq/; "
+            "the renderer loads swimmercoseq/fish1 + swimmercoseq/fish2 + swimmerbfnn/fish2."
+        ),
+    )
+    ap.add_argument("--output", required=True, help="Output PNG path or output directory")
+    ap.add_argument(
+        "--frames",
+        nargs="+",
+        required=True,
+        help="Frame indices to overlay, separated by spaces and/or commas. Example: --frames 0 64, 63 34",
+    )
+    ap.add_argument("--resolution", type=int, nargs=2, default=None, metavar=("W", "H"))
+    ap.add_argument("--samples", type=int, default=None, help="Render samples (16=test, 128+=final)")
+    ap.add_argument("--engine", choices=["CYCLES", "BLENDER_EEVEE_NEXT", "BLENDER_EEVEE"], default=None)
+    ap.add_argument(
+        "--y-gap",
+        type=float,
+        default=None,
+        help="Y gap between swimmer lanes (auto-computed when omitted).",
+    )
+    ap.add_argument(
+        "--y",
+        dest="y_values",
+        type=float,
+        nargs=3,
+        default=None,
+        metavar=("Y1", "Y2", "Y3"),
+        help=(
+            "Manual Y lane centers for fish1 fish2 fish3 on the first selected frame. "
+            "Overrides --y-gap."
+        ),
+    )
+    ap.add_argument("--allow-missing-stream", action="store_true")
+
+    # ── Grid controls ─────────────────────────────────────────
+    grid_grp = ap.add_argument_group("grid", "Grid ground plane controls")
+    grid_grp.add_argument("--grid-spacing", type=float, default=None,
+                          help="Grid line spacing in scene units (default: auto).")
+    grid_grp.add_argument("--grid-line-width", type=float, default=None,
+                          help=f"Grid line thickness (default: {CFG.grid_line_width}).")
+    grid_grp.add_argument("--grid-min-px", type=float, default=None,
+                          help=f"Minimum on-screen line width in pixels (default: {CFG.grid_min_pixels}).")
+    grid_grp.add_argument("--no-grid", action="store_true",
+                          help="Disable the grid ground plane.")
+
+    # ── Smoothing controls ────────────────────────────────────
+    smooth = ap.add_argument_group("smoothing", "Color smoothing and shading controls")
+    smooth.add_argument("--blend-iters", type=int, default=None,
+                        help=f"Laplacian diffusion iterations (default: {CFG.color_blend_iters}). "
+                             "0 disables smoothing entirely.")
+    smooth.add_argument("--blend-self-weight", type=float, default=None,
+                        help=f"Self-retention weight during diffusion (default: {CFG.color_blend_self_weight}). "
+                             "Higher = vertex keeps more of its own color.")
+    smooth.add_argument("--boundary-weight", type=float, default=None,
+                        help=f"Cross-label edge weight (default: {CFG.boundary_weight}). "
+                             "0.0 = hard boundary (no bleed across labels). "
+                             "1.0 = ignore labels (full diffusion everywhere).")
+    smooth.add_argument("--color-domain", choices=["vertex", "face"], default=None,
+                        help=f"Color attribute domain (default: {CFG.color_domain}). "
+                             "'vertex' = smooth interpolated gradients. "
+                             "'face' = flat per-triangle colors (no smoothing).")
+    smooth.add_argument("--smooth-shading", action="store_true", default=None,
+                        help="Enable smooth mesh shading (default: on)")
+    smooth.add_argument("--flat-shading", action="store_true",
+                        help="Force flat mesh shading")
+    smooth.add_argument("--auto-smooth-angle", type=float, default=None,
+                        help=f"Auto-smooth angle in degrees (default: {CFG.auto_smooth_angle})")
+
+    args = ap.parse_args(argv)
+
+    # Apply to settings
+    if args.resolution is not None: CFG.resolution = tuple(args.resolution)
+    if args.samples is not None:    CFG.render_samples = args.samples
+    if args.engine is not None:     CFG.render_engine = args.engine
+    if args.y_gap is not None:      CFG.fish_y_gap = args.y_gap
+    CFG.fish_y_lines = tuple(args.y_values) if args.y_values is not None else None
+    CFG.allow_missing_stream = bool(args.allow_missing_stream)
+    args.frames = parse_frame_indices(args.frames)
+
+    # Grid
+    if args.grid_spacing is not None:    CFG.grid_spacing = args.grid_spacing
+    if args.grid_line_width is not None: CFG.grid_line_width = args.grid_line_width
+    if args.grid_min_px is not None:     CFG.grid_min_pixels = args.grid_min_px
+    if args.no_grid:                     CFG.grid_enable = False
+
+    # Smoothing
+    if args.blend_iters is not None:      CFG.color_blend_iters = args.blend_iters
+    if args.blend_self_weight is not None: CFG.color_blend_self_weight = args.blend_self_weight
+    if args.boundary_weight is not None:   CFG.boundary_weight = args.boundary_weight
+    if args.color_domain is not None:      CFG.color_domain = args.color_domain
+    if args.auto_smooth_angle is not None: CFG.auto_smooth_angle = args.auto_smooth_angle
+    if args.flat_shading:
+        CFG.smooth_shading = False
+    elif args.smooth_shading:
+        CFG.smooth_shading = True
+
+    return args
+
+
+if __name__ == "__main__":
+    try:
+        args = parse_args()
+        print("=" * 50)
+        print(f"  Input:  {args.input}")
+        print(f"  Output: {args.output}")
+        print(f"  Frames: {args.frames}")
+        print(f"  {CFG.resolution[0]}×{CFG.resolution[1]}  samples={CFG.render_samples}")
+        print(f"  Smoothing: domain={CFG.color_domain}  iters={CFG.color_blend_iters}  "
+              f"self_w={CFG.color_blend_self_weight}  boundary_w={CFG.boundary_weight}")
+        print(f"  Shading: {'smooth' if CFG.smooth_shading else 'flat'} "
+              f"(auto-smooth angle={CFG.auto_smooth_angle}°)")
+        print("=" * 50)
+        render_overlay(args.input, args.output, args.frames)
+        print("\nDone!")
+    except Exception as exc:
+        print(f"\nERROR: {exc}", file=sys.stderr)
+        sys.exit(1)
