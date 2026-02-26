@@ -1,15 +1,11 @@
 #!/usr/bin/env python3
 """
-render_blender_overlay.py — Headless Blender renderer for overlaying selected
-timesteps into a single PNG image.
+paper_render_cubes.py — Headless Blender renderer for two cube streams.
 
-Usage:
-    blender --background --python render_blender_overlay.py -- \
-        --input preprocessed/ --output renders/overlay.png \
-        --frames 0 64 128 --resolution 1920 1080 --samples 128
+Run:
+    blender --background --python paper_render_cubes.py
 
-`--frames` accepts mixed separators, e.g.:
-    --frames 0 64, 63 34
+All options are defined in `Settings` below.
 """
 
 import os, sys, glob, math, tempfile
@@ -24,19 +20,26 @@ from mathutils import Vector
 
 class Settings:
 
+    # ── Input / output ───────────────────────────────────────
+    input_dir       = "preprocessed/jumpercoseq"
+    output_path     = "renders/cubes.png"      # produces cubes_<frame>.png
+    frame_indices   = [0, 100, 400]            # exactly 3 frames (enforced)
+    stream1         = "cube1"
+    stream2         = "cube2"
+
     # ── Resolution ────────────────────────────────────────────
-    resolution      = (1920, 1080)
-    render_samples  = 128        # 16=test, 128+=final
+    resolution      = (500, 250)
+    render_samples  = 8       # 16=test, 128+=final
     render_engine   = "CYCLES"  # "CYCLES" or "BLENDER_EEVEE_NEXT"
     use_gpu         = True
     fps             = 60
 
-    # ── Camera ────────────────────────────────────────────────
-    ortho_padding      = 1.10
-    camera_follow      = False
-    camera_track_alpha = 1.00
-    camera_height_min  = 8.0
-    camera_height_mult = 2.3
+    # ── Camera (fixed orthographic rig) ──────────────────────
+    ortho_padding       = 1.20
+    camera_elevation_deg = 18.0   # lower camera for stronger low-angle look
+    camera_azimuth_deg   = 224.0
+    camera_distance_min  = 9.0
+    camera_distance_mult = 2.5
 
     # ── Background ────────────────────────────────────────────
     world_color      = (1.0, 1.0, 1.0)
@@ -44,12 +47,12 @@ class Settings:
 
     # ── Grid ground plane ─────────────────────────────────────
     grid_enable      = True
-    grid_color       = (0.55, 0.55, 0.55)      # thin line color (medium gray)
-    grid_bg_color    = (1.0, 1.0, 1.0)       # ground plane fill (near-white)
+    grid_color       = (0.55, 0.55, 0.55)   # thin line color (medium gray)
+    grid_bg_color    = (1.0, 1.0, 1.0)    # ground plane fill (near-white)
     grid_emission    = 1.0                    # emission strength for ground
-    grid_line_width  = 0.10                  # base line thickness in scene units
-    grid_min_pixels  = 5.0                    # enforce minimum visible line width in pixels
-    grid_spacing     = 1.5                    # auto-computed if None
+    grid_line_width  = 0.01                  # base line thickness in scene units
+    grid_min_pixels  = 5.0                   # minimum visible line width in pixels
+    grid_spacing     = 0.3                   # auto-computed if None
     grid_margin      = 0.60
     grid_cover_scale = 1.30
     grid_z_offset    = 0.10
@@ -57,51 +60,49 @@ class Settings:
     ground_specular  = 0.03
     ground_emission  = 0.25
 
-    # ── Subtle shadow depth ──────────────────────────────────
-    fish_z_lift   = 0.0
-    ground_drop   = 0.0
+    # ── Subtle depth offset ──────────────────────────────────
+    cube_z_lift      = 0.0
+    ground_drop      = 0.0
 
     # ── Lighting ──────────────────────────────────────────────
+    # Three-point area rig (parented to camera rig).
     key_energy       = 520.0
-    key_color        = (1.0, 0.95, 0.90)    # warm key
+    key_color        = (1.0, 0.95, 0.90)
     key_size_factor  = 0.55
 
     fill_energy      = 130.0
-    fill_color       = (0.90, 0.93, 1.0)    # cool fill
+    fill_color       = (0.90, 0.93, 1.0)
     fill_size_factor = 0.50
 
     rim_energy       = 120.0
-    rim_color        = (1.0, 0.97, 0.94)    # warm rim
+    rim_color        = (1.0, 0.97, 0.94)
     rim_size_factor  = 0.45
 
     light_spread     = 1.05
     light_z_factor   = 0.86
 
-    # ── Fish layout ───────────────────────────────────────────
-    fish_y_gap      = 0.0
-    fish_y_lines    = (0.0, -3.0, 3.0)
+    # ── Cube layout ───────────────────────────────────────────
+    cube_y_gap      = 0.0       # 0 = auto from stream extent
 
     # ── Color themes ──────────────────────────────────────────
-    theme_fish1 = {
+    # Shared palette between both cubes for direct material comparison.
+    theme_cube1 = {
         "name": "StudioBlue",
-        "default": (0.064, 0.176, 0.60),    
-        0: (0.925, 0.925, 0.925),              # passive
-        1: (1, 0.35, 0.35),              # muscle 1
-        2: (0.40, 0.40, 1),              # muscle 2
-        #####################
-        3: (0.98, 0.66, 0.22),              # high-contrast golden yellow
-        4: (0.31, 0.10, 0.38),              # deep violet
-        5: (0.18, 0.34, 0.08),              # dark olive green
-        6: (0.08, 0.32, 0.28),              # dark teal
-        7: (0.40, 0.28, 0.04),              # dark amber
-        8: (0.08, 0.30, 0.18),              # dark forest green
-        9: (0.38, 0.08, 0.24),              # deep rose
-        10: (0.42, 0.18, 0.06),             # dark burnt orange
+        "default": (0.064, 0.176, 0.60),
+        0: (0.925, 0.925, 0.925),           # passive
+        1: (1.0, 0.35, 0.35),               # muscle 1
+        2: (0.40, 0.40, 1.0),               # muscle 2
+        3: (0.98, 0.66, 0.22),
+        4: (0.31, 0.10, 0.38),
+        5: (0.18, 0.34, 0.08),
+        6: (0.08, 0.32, 0.28),
+        7: (0.40, 0.28, 0.04),
+        8: (0.08, 0.30, 0.18),
+        9: (0.38, 0.08, 0.24),
+        10: (0.42, 0.18, 0.06),
     }
 
-    theme_fish2 = theme_fish1.copy()
-    theme_fish3 = theme_fish1.copy()
-
+    theme_cube2 = theme_cube1.copy()
 
     # ── Material ──────────────────────────────────────────────
     roughness       = 0.28
@@ -110,16 +111,13 @@ class Settings:
     emission_body   = 0.005
     emission_label  = 0.02
     color_attribute_name = "LabelColor"
-
-    # ── Smoothing controls ────────────────────────────────────
-    color_blend_iters      = 1      # diffusion iterations (0 = no smoothing)
-    color_blend_self_weight = 10.00  # vertex self-retention vs neighbor average
-    boundary_weight        = 0.01    # cross-label edge weight: 0=hard, 1=no distinction
-    color_domain           = "vertex"  # "vertex" for smooth gradients, "face" for flat
-    smooth_shading         = True   # mesh smooth shading
-    auto_smooth_angle      = 48.0   # degrees, for auto-smooth
-
-    # ── Reference lines (invisible) ───────────────────────────
+    color_blend_iters    = 1
+    color_blend_self_weight = 10.0
+    boundary_weight      = 0.01
+    color_domain         = "vertex"  # "vertex" or "face"
+    smooth_shading       = True
+    auto_smooth_angle    = 48.0
+    # Kept for compatibility with helper utilities not used in cube scene.
     line_color      = (0.0, 0.0, 0.0)
     line_thickness  = 0.0
     line_extend     = 0.0
@@ -188,65 +186,65 @@ def save_metadata(meta_path, frames):
     return meta
 
 
-def parse_frame_npz(npz_obj, fp, fish_name):
+def parse_frame_npz(npz_obj, fp, stream_name):
     required = ("vertices", "triangles", "labels")
     missing = [k for k in required if k not in npz_obj]
     if missing:
-        raise ValueError(f"[{fish_name}] {fp} missing keys: {missing}")
+        raise ValueError(f"[{stream_name}] {fp} missing keys: {missing}")
 
     vertices = np.asarray(npz_obj["vertices"], dtype=np.float32)
     triangles = np.asarray(npz_obj["triangles"], dtype=np.int32)
     labels = np.asarray(npz_obj["labels"], dtype=np.int32).reshape(-1)
 
     if vertices.ndim != 2 or vertices.shape[1] < 3:
-        raise ValueError(f"[{fish_name}] invalid vertices in {fp}: {vertices.shape}")
+        raise ValueError(f"[{stream_name}] invalid vertices in {fp}: {vertices.shape}")
     if vertices.shape[1] > 3:
         vertices = vertices[:, :3]
 
     if triangles.ndim != 2 or triangles.shape[1] != 3:
-        raise ValueError(f"[{fish_name}] invalid triangles in {fp}: {triangles.shape}")
+        raise ValueError(f"[{stream_name}] invalid triangles in {fp}: {triangles.shape}")
     if len(triangles) == 0:
-        raise ValueError(f"[{fish_name}] empty triangles in {fp}")
+        raise ValueError(f"[{stream_name}] empty triangles in {fp}")
 
     if len(labels) != len(triangles):
         if len(labels) == 1:
             labels = np.full((len(triangles),), int(labels[0]), dtype=np.int32)
         else:
             raise ValueError(
-                f"[{fish_name}] label/triangle mismatch in {fp}: "
+                f"[{stream_name}] label/triangle mismatch in {fp}: "
                 f"{len(labels)} labels vs {len(triangles)} triangles"
             )
 
     return {"vertices": vertices, "triangles": triangles, "labels": labels}
 
 
-def load_frames(input_dir, fish_name, allow_missing=False):
-    fish_dir = os.path.join(input_dir, fish_name)
-    if not os.path.isdir(fish_dir):
+def load_frames(input_dir, stream_name, allow_missing=False):
+    stream_dir = os.path.join(input_dir, stream_name)
+    if not os.path.isdir(stream_dir):
         if allow_missing:
             return [], None
-        raise FileNotFoundError(f"[{fish_name}] directory not found: {fish_dir}")
+        raise FileNotFoundError(f"[{stream_name}] directory not found: {stream_dir}")
 
-    frame_paths = sorted(glob.glob(os.path.join(fish_dir, "frame_*.npz")))
+    frame_paths = sorted(glob.glob(os.path.join(stream_dir, "frame_*.npz")))
     if not frame_paths:
         if allow_missing:
             return [], None
-        raise FileNotFoundError(f"[{fish_name}] no frame_*.npz files in {fish_dir}")
+        raise FileNotFoundError(f"[{stream_name}] no frame_*.npz files in {stream_dir}")
 
     frames = []
     for fp in frame_paths:
         try:
             with np.load(fp, allow_pickle=False) as d:
-                frames.append(parse_frame_npz(d, fp, fish_name))
+                frames.append(parse_frame_npz(d, fp, stream_name))
         except Exception as exc:
-            print(f"  [{fish_name}] skipping invalid frame {os.path.basename(fp)} ({exc})")
+            print(f"  [{stream_name}] skipping invalid frame {os.path.basename(fp)} ({exc})")
 
     if not frames:
         if allow_missing:
             return [], None
-        raise ValueError(f"[{fish_name}] no valid frame data in {fish_dir}")
+        raise ValueError(f"[{stream_name}] no valid frame data in {stream_dir}")
 
-    meta_path = os.path.join(fish_dir, "metadata.npz")
+    meta_path = os.path.join(stream_dir, "metadata.npz")
     meta = None
     if os.path.isfile(meta_path):
         try:
@@ -261,10 +259,10 @@ def load_frames(input_dir, fish_name, allow_missing=False):
             if n_meta != len(frames):
                 raise ValueError("frame count mismatch")
         except Exception as exc:
-            print(f"  [{fish_name}] invalid metadata.npz ({exc}); rebuilding.")
+            print(f"  [{stream_name}] invalid metadata.npz ({exc}); rebuilding.")
             meta = save_metadata(meta_path, frames)
     else:
-        print(f"  [{fish_name}] metadata.npz missing; rebuilding from frame files.")
+        print(f"  [{stream_name}] metadata.npz missing; rebuilding from frame files.")
         meta = save_metadata(meta_path, frames)
 
     return frames, meta
@@ -289,14 +287,16 @@ def to_rgba(color):
 
 
 def create_material(name, emission_strength):
-    """Surface material driven by per-vertex/per-corner label colors."""
+    """Surface material driven by per-vertex label colors."""
     mat = bpy.data.materials.new(name=name)
     mat.use_nodes = True
     nodes = mat.node_tree.nodes
     links = mat.node_tree.links
 
+    # Clear defaults
     for n in list(nodes): nodes.remove(n)
 
+    # Principled + emission, both fed by vertex-color attribute.
     output = nodes.new("ShaderNodeOutputMaterial")
     shader_add = nodes.new("ShaderNodeAddShader")
     principled = nodes.new("ShaderNodeBsdfPrincipled")
@@ -353,10 +353,6 @@ def triangles_to_edges(triangles):
     return np.unique(edges, axis=0)
 
 
-# ------------------------------------------------------------------
-#  Vertex-color smoothing (boundary-aware Laplacian diffusion)
-# ------------------------------------------------------------------
-
 def _build_edge_weights(triangles, labels, n_verts, boundary_weight):
     tri = np.asarray(triangles, dtype=np.int64)
     lab = np.asarray(labels, dtype=np.int32)
@@ -394,18 +390,15 @@ def _build_edge_weights(triangles, labels, n_verts, boundary_weight):
 
     bw = float(np.clip(boundary_weight, 0.0, 1.0))
     edge_w = np.where(same_label, 1.0, bw).astype(np.float32)
-
     return u_v0, u_v1, edge_w
 
 
-def blend_vertex_colors_boundary_aware(vertex_colors, triangles, labels,
-                                        iters, self_weight, boundary_weight):
+def blend_vertex_colors_boundary_aware(vertex_colors, triangles, labels, iters, self_weight, boundary_weight):
     if iters <= 0 or len(vertex_colors) == 0:
         return vertex_colors.copy()
 
     n_verts = len(vertex_colors)
     u_v0, u_v1, edge_w = _build_edge_weights(triangles, labels, n_verts, boundary_weight)
-
     if len(u_v0) == 0:
         return vertex_colors.copy()
 
@@ -427,10 +420,6 @@ def blend_vertex_colors_boundary_aware(vertex_colors, triangles, labels,
 
     return np.clip(cur, 0.0, 1.0)
 
-
-# ------------------------------------------------------------------
-#  Color attribute writing
-# ------------------------------------------------------------------
 
 def set_mesh_vertex_colors(mesh, vertex_colors, attr_name):
     attrs = mesh.color_attributes
@@ -466,10 +455,6 @@ def set_mesh_face_colors(mesh, face_colors, attr_name):
     rgba[:, 3] = 1.0
     attr.data.foreach_set("color", rgba.reshape(-1))
 
-
-# ------------------------------------------------------------------
-#  Material + color assignment
-# ------------------------------------------------------------------
 
 def assign_materials(obj, labels, materials_dict):
     mesh = obj.data
@@ -521,9 +506,11 @@ def update_mesh(obj, vertices, triangles):
 
 
 def ensure_outward_normals(obj):
+    """Fallback for preprocessed data with inverted winding."""
     mesh = obj.data
     if len(mesh.polygons) == 0:
         return
+
     verts = np.array([v.co[:] for v in mesh.vertices], dtype=np.float64)
     tris = np.array([p.vertices[:] for p in mesh.polygons], dtype=np.int64)
     tri = verts[tris]
@@ -546,6 +533,7 @@ def apply_surface_shading(obj):
 
 
 def smooth_track(values, alpha):
+    """Exponential smoothing to reduce camera jitter."""
     if not values:
         return []
     a = min(max(alpha, 0.0), 1.0)
@@ -576,18 +564,16 @@ def robust_center_y(frames):
     return float(np.median(np.array(centers)))
 
 
-def compute_frame_coverage(frame_streams, y_offsets, n):
-    if len(frame_streams) != len(y_offsets):
-        raise ValueError("compute_frame_coverage: stream/offset size mismatch")
-    if not frame_streams:
-        raise ValueError("compute_frame_coverage: no frame streams provided")
-
+def compute_frame_coverage(frames1, frames2, y_off1, y_off2, n):
+    """Frame-wise bounds for stable camera scale and tracking."""
     frame_centers_x = []
     frame_centers_y = []
     frame_x_min = []
     frame_x_max = []
     frame_y_min = []
     frame_y_max = []
+    frame_z_min = []
+    frame_z_max = []
     x_min = float("inf")
     x_max = float("-inf")
     y_min = float("inf")
@@ -598,19 +584,18 @@ def compute_frame_coverage(frame_streams, y_offsets, n):
     max_span_y = 0.0
 
     for fi in range(n):
-        mins = []
-        maxs = []
-        for frames, y_off in zip(frame_streams, y_offsets):
-            verts = frames[fi]["vertices"]
-            mn = verts.min(axis=0).astype(np.float64)
-            mx = verts.max(axis=0).astype(np.float64)
-            mn[1] += y_off
-            mx[1] += y_off
-            mins.append(mn)
-            maxs.append(mx)
+        v1 = frames1[fi]["vertices"]
+        v2 = frames2[fi]["vertices"]
 
-        fmin = np.min(np.stack(mins, axis=0), axis=0)
-        fmax = np.max(np.stack(maxs, axis=0), axis=0)
+        mn1 = v1.min(axis=0).astype(np.float64)
+        mx1 = v1.max(axis=0).astype(np.float64)
+        mn2 = v2.min(axis=0).astype(np.float64)
+        mx2 = v2.max(axis=0).astype(np.float64)
+        mn1[1] += y_off1; mx1[1] += y_off1
+        mn2[1] += y_off2; mx2[1] += y_off2
+
+        fmin = np.minimum(mn1, mn2)
+        fmax = np.maximum(mx1, mx2)
         span = fmax - fmin
 
         frame_centers_x.append(float((fmin[0] + fmax[0]) * 0.5))
@@ -619,6 +604,8 @@ def compute_frame_coverage(frame_streams, y_offsets, n):
         frame_x_max.append(float(fmax[0]))
         frame_y_min.append(float(fmin[1]))
         frame_y_max.append(float(fmax[1]))
+        frame_z_min.append(float(fmin[2]))
+        frame_z_max.append(float(fmax[2]))
         x_min = min(x_min, float(fmin[0]))
         x_max = max(x_max, float(fmax[0]))
         y_min = min(y_min, float(fmin[1]))
@@ -642,6 +629,8 @@ def compute_frame_coverage(frame_streams, y_offsets, n):
         "frame_x_max": frame_x_max,
         "frame_y_min": frame_y_min,
         "frame_y_max": frame_y_max,
+        "frame_z_min": frame_z_min,
+        "frame_z_max": frame_z_max,
         "x_min": x_min,
         "x_max": x_max,
         "y_min": y_min,
@@ -653,21 +642,58 @@ def compute_frame_coverage(frame_streams, y_offsets, n):
     }
 
 
-def compute_required_ortho_scale(coverage, x_track, y_track, aspect, padding):
+def camera_basis(elevation_deg, azimuth_deg):
+    """Return camera placement vector and projection basis for a fixed angle."""
+    el = math.radians(float(elevation_deg))
+    az = math.radians(float(azimuth_deg))
+
+    to_camera = np.array([
+        math.cos(el) * math.cos(az),
+        math.cos(el) * math.sin(az),
+        math.sin(el),
+    ], dtype=np.float64)
+    to_camera /= max(np.linalg.norm(to_camera), 1e-12)
+
+    # Camera looks back toward the rig center.
+    forward = -to_camera
+    world_up = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    right = np.cross(world_up, forward)
+    if np.linalg.norm(right) < 1e-8:
+        right = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+    right /= np.linalg.norm(right)
+    up = np.cross(forward, right)
+    up /= max(np.linalg.norm(up), 1e-12)
+
+    return to_camera, right, up
+
+
+def compute_required_ortho_scale_angled(coverage, x_track, y_track, track_z, right, up, aspect, padding):
+    """Width-style ortho scale needed for an angled orthographic camera."""
     if aspect <= 0:
         aspect = 1.0
     pad = max(float(padding), 1.0)
     required = 1e-3
-    for fi, (cx, cy) in enumerate(zip(x_track, y_track)):
-        half_x = max(
-            cx - coverage["frame_x_min"][fi],
-            coverage["frame_x_max"][fi] - cx,
+    for fi in range(len(x_track)):
+        cx, cy = float(x_track[fi]), float(y_track[fi])
+        corners = (
+            (coverage["frame_x_min"][fi], coverage["frame_y_min"][fi], coverage["frame_z_min"][fi]),
+            (coverage["frame_x_min"][fi], coverage["frame_y_min"][fi], coverage["frame_z_max"][fi]),
+            (coverage["frame_x_min"][fi], coverage["frame_y_max"][fi], coverage["frame_z_min"][fi]),
+            (coverage["frame_x_min"][fi], coverage["frame_y_max"][fi], coverage["frame_z_max"][fi]),
+            (coverage["frame_x_max"][fi], coverage["frame_y_min"][fi], coverage["frame_z_min"][fi]),
+            (coverage["frame_x_max"][fi], coverage["frame_y_min"][fi], coverage["frame_z_max"][fi]),
+            (coverage["frame_x_max"][fi], coverage["frame_y_max"][fi], coverage["frame_z_min"][fi]),
+            (coverage["frame_x_max"][fi], coverage["frame_y_max"][fi], coverage["frame_z_max"][fi]),
         )
-        half_y = max(
-            cy - coverage["frame_y_min"][fi],
-            coverage["frame_y_max"][fi] - cy,
-        )
-        required = max(required, max(2.0 * half_x, 2.0 * half_y * aspect))
+        max_abs_x = 0.0
+        max_abs_y = 0.0
+        for xw, yw, zw in corners:
+            dv = np.array([xw - cx, yw - cy, zw - track_z], dtype=np.float64)
+            px = abs(float(np.dot(dv, right)))
+            py = abs(float(np.dot(dv, up)))
+            max_abs_x = max(max_abs_x, px)
+            max_abs_y = max(max_abs_y, py)
+        required = max(required, max(2.0 * max_abs_x, 2.0 * max_abs_y * aspect))
     return max(required * pad, 1e-3)
 
 
@@ -676,6 +702,7 @@ def compute_required_ortho_scale(coverage, x_track, y_track, aspect, padding):
 # ==================================================================
 
 def setup_world():
+    """Neutral bright world."""
     world = bpy.context.scene.world
     if world is None:
         world = bpy.data.worlds.new("World")
@@ -691,7 +718,8 @@ def setup_world():
     bg.inputs["Strength"].default_value = CFG.world_strength
 
 
-def setup_camera(track_x0, track_y, track_z, ortho_scale, z_span):
+def setup_camera(track_x0, track_y, track_z, ortho_scale, scene_span, to_camera):
+    """Angled orthographic camera parented to a tracking rig."""
     rig = bpy.data.objects.new("CameraRig", None)
     bpy.context.collection.objects.link(rig)
     rig.location = Vector((track_x0, track_y, track_z))
@@ -706,24 +734,30 @@ def setup_camera(track_x0, track_y, track_z, ortho_scale, z_span):
     cam_data.sensor_fit = "HORIZONTAL"
     cam_data.ortho_scale = ortho_scale
 
-    cam_height = max(
-        CFG.camera_height_min,
-        z_span * CFG.camera_height_mult,
-        ortho_scale * 2.0,
+    cam_distance = max(
+        CFG.camera_distance_min,
+        scene_span * CFG.camera_distance_mult,
+        ortho_scale * 1.75,
     )
-    cam_obj.location = Vector((0.0, 0.0, cam_height))
-    cam_obj.rotation_euler = (0, 0, 0)
+    cam_obj.location = Vector(tuple(to_camera * cam_distance))
+    cam_obj.rotation_euler = (0.0, 0.0, 0.0)
+
+    track = cam_obj.constraints.new(type='TRACK_TO')
+    track.target = rig
+    track.track_axis = 'TRACK_NEGATIVE_Z'
+    track.up_axis = 'UP_Y'
 
     cam_data.clip_start = 0.01
-    cam_data.clip_end = max(1000.0, cam_height * 40.0)
+    cam_data.clip_end = max(1000.0, cam_distance * 80.0)
 
-    return rig, cam_obj, cam_height
+    return rig, cam_obj, cam_distance
 
 
-def setup_lights(rig, ortho_scale, cam_height):
+def setup_lights(rig, ortho_scale, cam_distance):
+    """Three-point area-light rig that follows the camera rig."""
     spread = max(ortho_scale * CFG.light_spread, 3.0)
     base_size = max(ortho_scale * 0.75, 1.5)
-    light_z = max(cam_height * CFG.light_z_factor, spread * 1.2)
+    light_z = max(cam_distance * CFG.light_z_factor, spread * 1.2)
     energy_scale = max((ortho_scale / 6.0) ** 2, 0.35)
 
     def add_light(name, energy, color, size_factor, offset):
@@ -739,15 +773,22 @@ def setup_lights(rig, ortho_scale, cam_height):
         lo.rotation_euler = (0, 0, 0)
         return lo
 
-    add_light("Key", CFG.key_energy, CFG.key_color, CFG.key_size_factor,
-              (-spread * 0.40, -spread * 0.40, 0.0))
-    add_light("Fill", CFG.fill_energy, CFG.fill_color, CFG.fill_size_factor,
-              (spread * 0.42, spread * 0.12, -spread * 0.12))
-    add_light("Rim", CFG.rim_energy, CFG.rim_color, CFG.rim_size_factor,
-              (0.0, spread * 0.52, -spread * 0.18))
+    add_light(
+        "Key", CFG.key_energy, CFG.key_color, CFG.key_size_factor,
+        (-spread * 0.40, -spread * 0.40, 0.0),
+    )
+    add_light(
+        "Fill", CFG.fill_energy, CFG.fill_color, CFG.fill_size_factor,
+        (spread * 0.42, spread * 0.12, -spread * 0.12),
+    )
+    add_light(
+        "Rim", CFG.rim_energy, CFG.rim_color, CFG.rim_size_factor,
+        (0.0, spread * 0.52, -spread * 0.18),
+    )
 
 
 def create_reference_line(x_min, x_max, y_pos, z_pos):
+    """Thin emissive cylinder along X."""
     x_ext = max(x_max - x_min, 1e-3)
     x_lo = x_min - x_ext * CFG.line_extend
     x_hi = x_max + x_ext * CFG.line_extend
@@ -793,7 +834,7 @@ def _create_grid_line_material():
 
 
 def _create_grid_ground_material():
-    """Flat emissive material for the ground plane background."""
+    """Flat material with slight emission for the ground plane background."""
     mat = bpy.data.materials.new("GridGroundMat")
     mat.use_nodes = True
     nodes = mat.node_tree.nodes
@@ -808,8 +849,6 @@ def _create_grid_ground_material():
     set_node_input(bsdf, "Roughness", CFG.ground_roughness)
     set_node_input(bsdf, ["Specular IOR Level", "Specular"], CFG.ground_specular)
     set_node_input(em, "Color", to_rgba(CFG.grid_bg_color))
-    set_node_input(em, "Strength", CFG.grid_emission)
-    links.new(em.outputs["Emission"], out.inputs["Surface"])
     set_node_input(em, "Strength", CFG.ground_emission)
     links.new(bsdf.outputs["BSDF"], shader_add.inputs[0])
     links.new(em.outputs["Emission"], shader_add.inputs[1])
@@ -837,6 +876,7 @@ def create_grid_ground(x_min, x_max, y_min, y_max, z_pos, camera_ortho=None):
     if CFG.grid_spacing is not None and CFG.grid_spacing > 0:
         spacing = CFG.grid_spacing
     else:
+        # Aim for roughly 12-18 lines across the shorter dimension
         shorter = min(ext_x, ext_y)
         spacing = shorter / 14.0
 
@@ -883,31 +923,31 @@ def create_grid_ground(x_min, x_max, y_min, y_max, z_pos, camera_ortho=None):
 
     # Lines parallel to X (varying Y): long in X, thin in Y, slab in Z
     y_start = cy - math.floor((cy - plane_y_lo) / spacing) * spacing
-    y_pos_iter = y_start
-    while y_pos_iter <= plane_y_hi + 1e-8:
+    y_pos = y_start
+    while y_pos <= plane_y_hi + 1e-8:
         length = ext_x
-        bpy.ops.mesh.primitive_cube_add(size=1.0, location=(cx, y_pos_iter, line_z))
+        bpy.ops.mesh.primitive_cube_add(size=1.0, location=(cx, y_pos, line_z))
         obj = bpy.context.active_object
         obj.scale = (0.5 * length, 0.5 * line_w, 0.5 * line_h)
         obj.name = f"GridLineX_{line_count}"
         obj.parent = grid_parent
         obj.data.materials.append(line_mat)
         line_count += 1
-        y_pos_iter += spacing
+        y_pos += spacing
 
     # Lines parallel to Y (varying X): long in Y, thin in X, slab in Z
     x_start = cx - math.floor((cx - plane_x_lo) / spacing) * spacing
-    x_pos_iter = x_start
-    while x_pos_iter <= plane_x_hi + 1e-8:
+    x_pos = x_start
+    while x_pos <= plane_x_hi + 1e-8:
         length = ext_y
-        bpy.ops.mesh.primitive_cube_add(size=1.0, location=(x_pos_iter, cy, line_z))
+        bpy.ops.mesh.primitive_cube_add(size=1.0, location=(x_pos, cy, line_z))
         obj = bpy.context.active_object
         obj.scale = (0.5 * line_w, 0.5 * length, 0.5 * line_h)
         obj.name = f"GridLineY_{line_count}"
         obj.parent = grid_parent
         obj.data.materials.append(line_mat)
         line_count += 1
-        x_pos_iter += spacing
+        x_pos += spacing
 
     print(
         f"  Grid: {line_count} lines, spacing={spacing:.4f}, "
@@ -927,6 +967,7 @@ def setup_render():
     scene.render.film_transparent = False
     scene.render.use_motion_blur = False
 
+    # Color management with gentle contrast for presentation frames.
     for vt in ("Standard", "AgX", "Filmic"):
         try:
             scene.view_settings.view_transform = vt
@@ -1017,7 +1058,7 @@ def sanitize_frame_indices(frame_indices, n_frames):
         if resolved < 0 or resolved >= n_frames:
             raise IndexError(
                 f"Frame index {idx} is out of range for {n_frames} frames "
-                "(valid range: 0..{n_frames - 1}, negatives allowed)."
+                f"(valid range: 0..{n_frames - 1}, negatives allowed)."
             )
         if resolved in seen:
             continue
@@ -1028,190 +1069,119 @@ def sanitize_frame_indices(frame_indices, n_frames):
     return selected
 
 
-def resolve_output_png_path(output_arg):
+def resolve_output_target(output_arg):
     if output_arg.lower().endswith(".png"):
-        output_path = output_arg
+        out_dir = os.path.dirname(os.path.abspath(output_arg))
+        base = os.path.splitext(os.path.basename(output_arg))[0]
     else:
-        os.makedirs(output_arg, exist_ok=True)
-        output_path = os.path.join(output_arg, "overlay_frames.png")
-    out_dir = os.path.dirname(os.path.abspath(output_path))
+        out_dir = os.path.abspath(output_arg)
+        base = "frame"
     os.makedirs(out_dir, exist_ok=True)
-    return output_path
+    return out_dir, base
 
 
-def resolve_swimmer_input_roots(input_dir):
-    """
-    Resolve roots for:
-      - swimmercoseq/fish1
-      - swimmercoseq/fish2
-      - swimmerbfnn/fish2
+def render_selected_frames(input_dir, output_arg, frame_indices, stream1="cube1", stream2="cube2"):
+    out_dir, base_name = resolve_output_target(output_arg)
 
-    Supported --input forms:
-      1) preprocessed
-      2) preprocessed/swimmercoseq
-    """
-    root = os.path.abspath(input_dir)
-    base = os.path.basename(os.path.normpath(root))
+    print(f"Loading {stream1}..."); frames1, meta1 = load_frames(input_dir, stream1, allow_missing=True)
+    print(f"Loading {stream2}..."); frames2, meta2 = load_frames(input_dir, stream2, allow_missing=True)
+    loaded1, loaded2 = stream1, stream2
 
-    if base == "preprocessed":
-        seq_root = os.path.join(root, "swimmercoseq")
-        bfnn_root = os.path.join(root, "swimmerbfnn")
-    elif base == "swimmercoseq":
-        seq_root = root
-        bfnn_root = os.path.join(os.path.dirname(root), "swimmerbfnn")
-    else:
-        seq_root = root
-        bfnn_root = os.path.join(os.path.dirname(root), "swimmerbfnn")
+    # Compatibility fallback if the user reuses preprocess.py (fish1/fish2 folders).
+    if not frames1 and not frames2 and (stream1, stream2) == ("cube1", "cube2"):
+        print("  cube1/cube2 not found. Trying fish1/fish2 for compatibility.")
+        frames1, meta1 = load_frames(input_dir, "fish1", allow_missing=True)
+        frames2, meta2 = load_frames(input_dir, "fish2", allow_missing=True)
+        loaded1, loaded2 = "fish1", "fish2"
 
-    return seq_root, bfnn_root
-
-
-def render_overlay(input_dir, output_arg, frame_indices):
-    output_path = resolve_output_png_path(output_arg)
-
-    seq_root, bfnn_root = resolve_swimmer_input_roots(input_dir)
-    stream_specs = [
-        {
-            "name": "fish1",
-            "obj_prefix": "Fish1",
-            "theme": CFG.theme_fish1,
-            "root": seq_root,
-            "stream": "fish1",
-            "display": "swimmercoseq/fish1",
-        },
-        {
-            "name": "fish2",
-            "obj_prefix": "Fish2",
-            "theme": CFG.theme_fish2,
-            "root": seq_root,
-            "stream": "fish2",
-            "display": "swimmercoseq/fish2",
-        },
-        {
-            "name": "fish3",
-            "obj_prefix": "Fish3",
-            "theme": CFG.theme_fish3,
-            "root": bfnn_root,
-            "stream": "fish2",
-            "display": "swimmerbfnn/fish2",
-        },
-    ]
-
-    loaded = []
-    for spec in stream_specs:
-        stream_dir = os.path.join(spec["root"], spec["stream"])
-        print(f"Loading {spec['display']} ({stream_dir})...")
-        frames, meta = load_frames(spec["root"], spec["stream"], allow_missing=True)
-        loaded.append({"spec": spec, "frames": frames, "meta": meta})
-
-    if all(not item["frames"] for item in loaded):
+    if not frames1 and not frames2:
         raise FileNotFoundError(
-            "No swimmer streams found.\n"
-            f"  Expected: {os.path.join(seq_root, 'fish1')}\n"
-            f"  Expected: {os.path.join(seq_root, 'fish2')}\n"
-            f"  Expected: {os.path.join(bfnn_root, 'fish2')}"
+            f"No preprocessed data found in {input_dir}. "
+            f"Expected {stream1}/{stream2} (or fish1/fish2 for compatibility) frame_*.npz files."
         )
-
-    missing = [item for item in loaded if not item["frames"]]
-    if missing:
-        if not CFG.allow_missing_stream:
-            missing_names = ", ".join(item["spec"]["display"] for item in missing)
+    if not frames1 or not frames2:
+        if CFG.allow_missing_stream:
+            if not frames1:
+                print(f"  [{loaded1}] missing: duplicating {loaded2} (--allow-missing-stream enabled).")
+                frames1, meta1 = clone_stream(frames2, meta2)
+            if not frames2:
+                print(f"  [{loaded2}] missing: duplicating {loaded1} (--allow-missing-stream enabled).")
+                frames2, meta2 = clone_stream(frames1, meta1)
+        else:
+            missing = loaded1 if not frames1 else loaded2
             raise FileNotFoundError(
-                f"Missing required stream(s): {missing_names}. "
-                "Run preprocess for all streams, or pass --allow-missing-stream."
+                f"Missing required stream '{missing}' in {input_dir}. "
+                "Run preprocess_cubes_hex.py (or preprocess_cubes.py / preprocess.py), "
+                "or pass --allow-missing-stream."
             )
 
-        donor = next((item for item in loaded if item["frames"]), None)
-        if donor is None:
-            raise ValueError("No donor stream available to duplicate missing streams.")
-        for item in missing:
-            print(
-                f"  [{item['spec']['display']}] missing: duplicating "
-                f"{donor['spec']['display']} (--allow-missing-stream enabled)."
-            )
-            item["frames"], item["meta"] = clone_stream(donor["frames"], donor["meta"])
-
-    stream_frames = [item["frames"] for item in loaded]
-    stream_lengths = [len(frames) for frames in stream_frames]
-    n_total = min(stream_lengths)
-    if len(set(stream_lengths)) != 1:
-        msg = "  Frame-count mismatch: " + " ".join(
-            f"{item['spec']['display']}={len(item['frames'])}" for item in loaded
-        ) + f"; truncating to {n_total}"
-        print(msg)
-    if n_total == 0:
+    n = min(len(frames1), len(frames2))
+    if len(frames1) != len(frames2):
+        print(f"  Frame-count mismatch: {loaded1}={len(frames1)} {loaded2}={len(frames2)}; truncating to {n}")
+    if n == 0:
         raise ValueError("No frames available to render.")
 
-    selected = sanitize_frame_indices(frame_indices, n_total)
+    selected = sanitize_frame_indices(frame_indices, n)
     n_selected = len(selected)
-    print(f"Selected {n_selected} frame(s): {selected}")
+    print(f"Rendering {n_selected} selected frame(s): {selected}")
 
-    selected_stream_frames = []
-    for frames in stream_frames:
-        selected_stream_frames.append([frames[fi] for fi in selected])
+    frames1_sel = [frames1[fi] for fi in selected]
+    frames2_sel = [frames2[fi] for fi in selected]
 
-    # ── Stream placement (overlay-style lanes) ───────────────
-    n_streams = len(stream_frames)
-    y_centers = [robust_center_y(frames) for frames in stream_frames]
-    first_frame_centers = [
-        float(np.median(frames[selected[0]]["vertices"][:, 1]))
-        for frames in stream_frames
-    ]
+    # ── Y centering ───────────────────────────────────────────
+    y_c1 = robust_center_y(frames1)
+    y_c2 = robust_center_y(frames2)
 
-    if CFG.fish_y_lines is not None:
-        if len(CFG.fish_y_lines) != n_streams:
-            raise ValueError(
-                f"--y expects {n_streams} values for this render, got {len(CFG.fish_y_lines)}."
-            )
-        y_lines = [float(v) for v in CFG.fish_y_lines]
-        print("  Lane Y positions (manual): " + " ".join(f"{v:+.4f}" for v in y_lines))
-        y_offsets = [line - center for line, center in zip(y_lines, first_frame_centers)]
-    else:
-        if CFG.fish_y_gap <= 0:
-            y_ext = max(robust_y_span(frames) for frames in stream_frames)
-            CFG.fish_y_gap = y_ext * 1.35
-        mid = 0.5 * (n_streams - 1)
-        y_lines = [(mid - i) * CFG.fish_y_gap for i in range(n_streams)]
-        print(f"  Lane gap: {CFG.fish_y_gap:.4f}")
-        y_offsets = [line - center for line, center in zip(y_lines, y_centers)]
+    if CFG.cube_y_gap <= 0:
+        y_ext = max(robust_y_span(frames1), robust_y_span(frames2))
+        CFG.cube_y_gap = y_ext * 1.45
 
-    print("  Y offsets: " + "  ".join(
-        f"fish{i + 1}={off:+.4f}" for i, off in enumerate(y_offsets)
-    ))
+    y_line1 = CFG.cube_y_gap / 2.0
+    y_line2 = -CFG.cube_y_gap / 2.0
+    y_off1 = y_line1 - y_c1
+    y_off2 = y_line2 - y_c2
+    print(f"  Lane gap: {CFG.cube_y_gap:.4f}")
+    print(f"  Y offsets: cube1={y_off1:+.4f}  cube2={y_off2:+.4f}")
 
-    coverage = compute_frame_coverage(selected_stream_frames, y_offsets, n_selected)
-    z_lift = float(max(CFG.fish_z_lift, 0.0))
+    coverage = compute_frame_coverage(frames1_sel, frames2_sel, y_off1, y_off2, n_selected)
+    z_lift = float(max(CFG.cube_z_lift, 0.0))
     track_z = (coverage["z_min"] + coverage["z_max"]) * 0.5 + z_lift
     z_ground = (
         coverage["z_min"]
         - max(0.05, CFG.grid_z_offset * coverage["z_span"])
         - float(max(CFG.ground_drop, 0.0))
     )
-    z_line = coverage["z_max"] + max(0.02, coverage["z_span"] * 0.01) + z_lift
 
     aspect = CFG.resolution[0] / CFG.resolution[1]
     x_fixed = 0.5 * (coverage["x_min"] + coverage["x_max"])
-    y_fixed = float(np.mean(np.asarray(y_lines, dtype=np.float64)))
+    y_fixed = 0.5 * (y_line1 + y_line2)
     x_track = [x_fixed] * n_selected
     y_track = [y_fixed] * n_selected
+
+    to_camera, cam_right, cam_up = camera_basis(
+        CFG.camera_elevation_deg, CFG.camera_azimuth_deg
+    )
     camera_ortho = max(
         coverage["ortho_scale"],
-        compute_required_ortho_scale(
-            coverage, x_track, y_track, aspect, CFG.ortho_padding
+        compute_required_ortho_scale_angled(
+            coverage, x_track, y_track, track_z, cam_right, cam_up, aspect, CFG.ortho_padding
         ),
     )
 
-    cam_half_x = 0.5 * camera_ortho
-    cam_half_y = cam_half_x / aspect
-    cover = max(CFG.grid_cover_scale, 1.0)
-    bg_half_x = cam_half_x * cover
-    bg_half_y = cam_half_y * cover
-    bg_x_min = x_fixed - bg_half_x
-    bg_x_max = x_fixed + bg_half_x
-    bg_y_min = y_fixed - bg_half_y
-    bg_y_max = y_fixed + bg_half_y
+    span_xy = max(
+        coverage["x_max"] - coverage["x_min"],
+        coverage["y_max"] - coverage["y_min"],
+        camera_ortho,
+        1e-3,
+    )
+    ground_pad = span_xy * max(CFG.grid_cover_scale, 1.0)
+    bg_x_min = min(x_track) - ground_pad
+    bg_x_max = max(x_track) + ground_pad
+    bg_y_min = min(y_track) - ground_pad
+    bg_y_max = max(y_track) + ground_pad
 
-    print(f"  Camera mode: fixed")
+    print("  Camera mode: fixed")
+    print(f"  Camera angle: elevation={CFG.camera_elevation_deg:.1f}° azimuth={CFG.camera_azimuth_deg:.1f}°")
     print(f"  Ortho scale: {camera_ortho:.3f}")
     print(f"  Coverage X: {coverage['x_min']:.3f} → {coverage['x_max']:.3f}")
     print(f"  Smoothing: domain={CFG.color_domain}  iters={CFG.color_blend_iters}  "
@@ -1223,10 +1193,16 @@ def render_overlay(input_dir, output_arg, frame_indices):
     clear_scene()
     setup_world()
     setup_render()
-    rig, _cam, cam_height = setup_camera(
-        x_fixed, y_fixed, track_z, camera_ortho, coverage["z_span"],
+    scene_span = max(
+        coverage["x_max"] - coverage["x_min"],
+        coverage["y_max"] - coverage["y_min"],
+        coverage["z_span"],
+        1e-3,
     )
-    setup_lights(rig, camera_ortho, cam_height)
+    rig, _cam, cam_distance = setup_camera(
+        x_track[0], y_track[0], track_z, camera_ortho, scene_span, to_camera,
+    )
+    setup_lights(rig, camera_ortho, cam_distance)
     create_grid_ground(
         bg_x_min, bg_x_max,
         bg_y_min, bg_y_max,
@@ -1234,65 +1210,89 @@ def render_overlay(input_dir, output_arg, frame_indices):
         camera_ortho=camera_ortho,
     )
 
-    for y_line in y_lines:
-        create_reference_line(coverage["x_min"], coverage["x_max"], y_line, z_line)
+    # Materials
+    mats1 = build_materials(CFG.theme_cube1, "cube1")
+    mats2 = build_materials(CFG.theme_cube2, "cube2")
 
-    stream_render_specs = []
-    for item, y_off in zip(loaded, y_offsets):
-        spec = item["spec"]
-        stream_render_specs.append({
-            "name": spec["name"],
-            "obj_prefix": spec["obj_prefix"],
-            "frames": item["frames"],
-            "y_off": y_off,
-            "materials": build_materials(spec["theme"], spec["name"]),
-        })
+    # Initial meshes for the first selected frame
+    fi0 = selected[0]
+    f1 = frames1[fi0]; f2 = frames2[fi0]
+    v1 = f1["vertices"].copy(); v1[:, 1] += y_off1
+    v2 = f2["vertices"].copy(); v2[:, 1] += y_off2
+    if z_lift > 0.0:
+        v1[:, 2] += z_lift
+        v2[:, 2] += z_lift
 
-    for fi in selected:
-        for stream in stream_render_specs:
-            fr = stream["frames"][fi]
-            verts = fr["vertices"].copy()
-            verts[:, 1] += stream["y_off"]
+    obj1 = mesh_from_arrays("Cube1", v1, f1["triangles"])
+    ensure_outward_normals(obj1)
+    assign_materials(obj1, f1["labels"], mats1)
+    apply_surface_shading(obj1)
+
+    obj2 = mesh_from_arrays("Cube2", v2, f2["triangles"])
+    ensure_outward_normals(obj2)
+    assign_materials(obj2, f2["labels"], mats2)
+    apply_surface_shading(obj2)
+
+    # ── Render loop ───────────────────────────────────────────
+    print(f"\n{CFG.resolution[0]}×{CFG.resolution[1]}  samples={CFG.render_samples}  engine={CFG.render_engine}\n")
+
+    for out_i, fi in enumerate(selected):
+        path = os.path.join(out_dir, f"{base_name}_{fi}.png")
+
+        if out_i > 0:
+            f1 = frames1[fi]; f2 = frames2[fi]
+            v1 = f1["vertices"].copy(); v1[:, 1] += y_off1
+            v2 = f2["vertices"].copy(); v2[:, 1] += y_off2
             if z_lift > 0.0:
-                verts[:, 2] += z_lift
+                v1[:, 2] += z_lift
+                v2[:, 2] += z_lift
 
-            obj = mesh_from_arrays(
-                f"{stream['obj_prefix']}_{fi:05d}",
-                verts,
-                fr["triangles"],
-            )
-            ensure_outward_normals(obj)
-            assign_materials(obj, fr["labels"], stream["materials"])
-            apply_surface_shading(obj)
+            update_mesh(obj1, v1, f1["triangles"])
+            ensure_outward_normals(obj1)
+            assign_materials(obj1, f1["labels"], mats1)
+            apply_surface_shading(obj1)
+            update_mesh(obj2, v2, f2["triangles"])
+            ensure_outward_normals(obj2)
+            assign_materials(obj2, f2["labels"], mats2)
+            apply_surface_shading(obj2)
 
-    rig.location.x = x_fixed
-    rig.location.y = y_fixed
-    rig.location.z = track_z
+        rig.location.x = x_track[out_i]
+        rig.location.y = y_track[out_i]
+        rig.location.z = track_z
 
-    bpy.context.scene.render.filepath = output_path
-    bpy.ops.render.render(write_still=True)
-    print(f"\nOverlay image written to {output_path}")
-    return output_path
+        bpy.context.scene.render.filepath = path
+        bpy.ops.render.render(write_still=True)
+        print(f"  {out_i + 1:5d}/{n_selected} → {os.path.basename(path)}")
+
+    print(f"\n{n_selected} image(s) rendered to {out_dir}")
+    return n_selected
 
 
 if __name__ == "__main__":
     try:
-        # ── Render configuration (edit these values) ─────────
-        input_dir = "preprocessed"
-        output_path = "renders/swimmer_3_overlay.png"
-        frame_indices = [0, 465, 750, 990]
+        if len(CFG.frame_indices) != 3:
+            raise ValueError(
+                "Settings.frame_indices must contain exactly 3 frame indices."
+            )
 
         print("=" * 50)
-        print(f"  Input:  {input_dir}")
-        print(f"  Output: {output_path}")
-        print(f"  Frames: {frame_indices}")
+        print(f"  Input:  {CFG.input_dir}")
+        print(f"  Output: {CFG.output_path}")
+        print(f"  Frames: {CFG.frame_indices}")
+        print(f"  Streams: {CFG.stream1}, {CFG.stream2}")
         print(f"  {CFG.resolution[0]}×{CFG.resolution[1]}  samples={CFG.render_samples}")
         print(f"  Smoothing: domain={CFG.color_domain}  iters={CFG.color_blend_iters}  "
               f"self_w={CFG.color_blend_self_weight}  boundary_w={CFG.boundary_weight}")
         print(f"  Shading: {'smooth' if CFG.smooth_shading else 'flat'} "
               f"(auto-smooth angle={CFG.auto_smooth_angle}°)")
         print("=" * 50)
-        render_overlay(input_dir, output_path, frame_indices)
+        render_selected_frames(
+            CFG.input_dir,
+            CFG.output_path,
+            CFG.frame_indices,
+            stream1=CFG.stream1,
+            stream2=CFG.stream2,
+        )
         print("\nDone!")
     except Exception as exc:
         print(f"\nERROR: {exc}", file=sys.stderr)
