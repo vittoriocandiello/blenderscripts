@@ -750,6 +750,10 @@ def setup_lights(rig, ortho_scale, cam_distance):
         ld.color = color
         ld.shape = 'DISK'
         ld.size = base_size * size_factor
+        if hasattr(ld, "use_shadow"):
+            ld.use_shadow = True
+        if hasattr(ld, "cycles") and hasattr(ld.cycles, "cast_shadow"):
+            ld.cycles.cast_shadow = True
         lo = bpy.data.objects.new(name, ld)
         bpy.context.collection.objects.link(lo)
         lo.parent = rig
@@ -818,7 +822,7 @@ def _create_grid_line_material():
 
 
 def _create_grid_ground_material():
-    """Flat emissive material for the ground plane background."""
+    """Lit ground material so the plane can receive visible shadows."""
     mat = bpy.data.materials.new("GridGroundMat")
     mat.use_nodes = True
     nodes = mat.node_tree.nodes
@@ -826,10 +830,17 @@ def _create_grid_ground_material():
     for n in list(nodes):
         nodes.remove(n)
     out = nodes.new("ShaderNodeOutputMaterial")
+    shader_add = nodes.new("ShaderNodeAddShader")
+    bsdf = nodes.new("ShaderNodeBsdfPrincipled")
     em = nodes.new("ShaderNodeEmission")
+    set_node_input(bsdf, "Base Color", to_rgba(CFG.grid_bg_color))
+    set_node_input(bsdf, "Roughness", CFG.ground_roughness)
+    set_node_input(bsdf, ["Specular IOR Level", "Specular"], CFG.ground_specular)
     set_node_input(em, "Color", to_rgba(CFG.grid_bg_color))
-    set_node_input(em, "Strength", CFG.grid_emission)
-    links.new(em.outputs["Emission"], out.inputs["Surface"])
+    set_node_input(em, "Strength", CFG.ground_emission)
+    links.new(bsdf.outputs["BSDF"], shader_add.inputs[0])
+    links.new(em.outputs["Emission"], shader_add.inputs[1])
+    links.new(shader_add.outputs["Shader"], out.inputs["Surface"])
     return mat
 
 
