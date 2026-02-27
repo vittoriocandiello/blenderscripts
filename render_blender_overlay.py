@@ -3,16 +3,13 @@
 render_blender_overlay.py — Headless Blender renderer for overlaying selected
 timesteps into a single PNG image.
 
-Usage:
-    blender --background --python render_blender_overlay.py -- \
-        --input preprocessed/ --output renders/overlay.png \
-        --frames 0 64 128 --resolution 1920 1080 --samples 128
+Run:
+    blender --background --python render_blender_overlay.py
 
-`--frames` accepts mixed separators, e.g.:
-    --frames 0 64, 63 34
+All options are defined in `Settings` below.
 """
 
-import os, sys, glob, argparse, math, tempfile
+import os, sys, glob, math, tempfile
 import numpy as np
 import bpy
 from mathutils import Vector
@@ -24,9 +21,15 @@ from mathutils import Vector
 
 class Settings:
 
+    # ── Input / output ───────────────────────────────────────
+    input_dir       = "preprocessed/swimmercoseq"
+    #input_dir       = "preprocessed/swimmerbfnn"
+    output_path     = "renders/overlay.png"
+    frame_indices = [0, 465, 750, 990]
+
     # ── Resolution ────────────────────────────────────────────
     resolution      = (1920, 1080)
-    render_samples  = 64        # 16=test, 128+=final
+    render_samples  = 128        # 16=test, 128+=final
     render_engine   = "CYCLES"  # "CYCLES" or "BLENDER_EEVEE_NEXT"
     use_gpu         = True
     fps             = 60
@@ -53,6 +56,13 @@ class Settings:
     grid_margin      = 0.60
     grid_cover_scale = 1.30
     grid_z_offset    = 0.10
+    ground_roughness = 0.98
+    ground_specular  = 0.03
+    ground_emission  = 0.25
+
+    # ── Subtle shadow depth ──────────────────────────────────
+    fish_z_lift   = 0.0
+    ground_drop   = 0.0
 
     # ── Lighting ──────────────────────────────────────────────
     key_energy       = 520.0
@@ -76,10 +86,10 @@ class Settings:
     # ── Color themes ──────────────────────────────────────────
     theme_fish1 = {
         "name": "StudioBlue",
-        "default": (0.064, 0.176, 0.60),    # body
-        0: (0.72, 0.80, 0.88),              # light blue
-        1: (0.04, 0.04, 0.04),
-        2: (0.15, 0.00, 0.00),
+        "default": (0.064, 0.176, 0.60),
+        0: (0.925, 0.925, 0.925),           # passive
+        1: (1.0, 0.35, 0.35),               # muscle 1
+        2: (0.40, 0.40, 1.0),               # muscle 2
         3: (0.98, 0.66, 0.22),              # high-contrast golden yellow
         4: (0.31, 0.10, 0.38),              # deep violet
         5: (0.18, 0.34, 0.08),              # dark olive green
@@ -90,28 +100,14 @@ class Settings:
         10: (0.42, 0.18, 0.06),             # dark burnt orange
     }
 
-    theme_fish2 = {
-        "name": "StudioBlue",
-        "default": (0.064, 0.176, 0.60),
-        0: (0.72, 0.80, 0.88),              # light blue
-        1: (0.04, 0.04, 0.04),
-        2: (0.15, 0.00, 0.00),
-        3: (0.98, 0.66, 0.22),
-        4: (0.31, 0.10, 0.38),
-        5: (0.18, 0.34, 0.08),
-        6: (0.08, 0.32, 0.28),
-        7: (0.40, 0.28, 0.04),
-        8: (0.08, 0.30, 0.18),
-        9: (0.38, 0.08, 0.24),
-        10: (0.42, 0.18, 0.06),
-    }
+    theme_fish2 = theme_fish1.copy()
 
     # ── Material ──────────────────────────────────────────────
-    roughness       = 0.85
-    specular        = 0.05
-    metallic        = 0.0
+    roughness       = 0.28
+    specular        = 0.35
+    metallic        = 0.02
     emission_body   = 0.005
-    emission_label  = 0.035
+    emission_label  = 0.02
     color_attribute_name = "LabelColor"
 
     # ── Smoothing controls ────────────────────────────────────
@@ -978,25 +974,6 @@ def clone_stream(frames, meta):
     return frames_out, meta_out
 
 
-def parse_frame_indices(raw_values):
-    frame_indices = []
-    for token in raw_values:
-        for part in token.split(","):
-            part = part.strip()
-            if not part:
-                continue
-            try:
-                frame_indices.append(int(part))
-            except ValueError as exc:
-                raise ValueError(
-                    f"Invalid frame index '{part}' in --frames. "
-                    "Use integers separated by spaces and/or commas."
-                ) from exc
-    if not frame_indices:
-        raise ValueError("No valid frame indices provided in --frames.")
-    return frame_indices
-
-
 def sanitize_frame_indices(frame_indices, n_frames):
     selected = []
     seen = set()
@@ -1039,16 +1016,16 @@ def render_overlay(input_dir, output_arg, frame_indices):
     if not frames1 or not frames2:
         if CFG.allow_missing_stream:
             if not frames1:
-                print("  [fish1] missing: duplicating fish2 (--allow-missing-stream enabled).")
+                print("  [fish1] missing: duplicating fish2 (allow_missing_stream enabled).")
                 frames1, meta1 = clone_stream(frames2, meta2)
             if not frames2:
-                print("  [fish2] missing: duplicating fish1 (--allow-missing-stream enabled).")
+                print("  [fish2] missing: duplicating fish1 (allow_missing_stream enabled).")
                 frames2, meta2 = clone_stream(frames1, meta1)
         else:
             missing = "fish1" if not frames1 else "fish2"
             raise FileNotFoundError(
                 f"Missing required stream '{missing}' in {input_dir}. "
-                "Run preprocess.py for both simulations, or pass --allow-missing-stream."
+                "Run preprocess.py for both simulations, or set CFG.allow_missing_stream = True."
             )
 
     n_total = min(len(frames1), len(frames2))
@@ -1164,107 +1141,22 @@ def render_overlay(input_dir, output_arg, frame_indices):
     return output_path
 
 
-# ==================================================================
-#  CLI
-# ==================================================================
-
-def parse_args():
-    argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
-    ap = argparse.ArgumentParser(
-        description="Render selected timesteps overlaid into a single PNG."
-    )
-    ap.add_argument("--input", required=True, help="Directory with fish1/ fish2/ preprocessed frames")
-    ap.add_argument("--output", required=True, help="Output PNG path or output directory")
-    ap.add_argument(
-        "--frames",
-        nargs="+",
-        required=True,
-        help="Frame indices to overlay, separated by spaces and/or commas. Example: --frames 0 64, 63 34",
-    )
-    ap.add_argument("--resolution", type=int, nargs=2, default=None, metavar=("W", "H"))
-    ap.add_argument("--samples", type=int, default=None, help="Render samples (16=test, 128+=final)")
-    ap.add_argument("--engine", choices=["CYCLES", "BLENDER_EEVEE_NEXT", "BLENDER_EEVEE"], default=None)
-    ap.add_argument("--y-gap", type=float, default=None, help="Y gap between fish lanes")
-    ap.add_argument("--allow-missing-stream", action="store_true")
-
-    # ── Grid controls ─────────────────────────────────────────
-    grid_grp = ap.add_argument_group("grid", "Grid ground plane controls")
-    grid_grp.add_argument("--grid-spacing", type=float, default=None,
-                          help="Grid line spacing in scene units (default: auto).")
-    grid_grp.add_argument("--grid-line-width", type=float, default=None,
-                          help=f"Grid line thickness (default: {CFG.grid_line_width}).")
-    grid_grp.add_argument("--grid-min-px", type=float, default=None,
-                          help=f"Minimum on-screen line width in pixels (default: {CFG.grid_min_pixels}).")
-    grid_grp.add_argument("--no-grid", action="store_true",
-                          help="Disable the grid ground plane.")
-
-    # ── Smoothing controls ────────────────────────────────────
-    smooth = ap.add_argument_group("smoothing", "Color smoothing and shading controls")
-    smooth.add_argument("--blend-iters", type=int, default=None,
-                        help=f"Laplacian diffusion iterations (default: {CFG.color_blend_iters}). "
-                             "0 disables smoothing entirely.")
-    smooth.add_argument("--blend-self-weight", type=float, default=None,
-                        help=f"Self-retention weight during diffusion (default: {CFG.color_blend_self_weight}). "
-                             "Higher = vertex keeps more of its own color.")
-    smooth.add_argument("--boundary-weight", type=float, default=None,
-                        help=f"Cross-label edge weight (default: {CFG.boundary_weight}). "
-                             "0.0 = hard boundary (no bleed across labels). "
-                             "1.0 = ignore labels (full diffusion everywhere).")
-    smooth.add_argument("--color-domain", choices=["vertex", "face"], default=None,
-                        help=f"Color attribute domain (default: {CFG.color_domain}). "
-                             "'vertex' = smooth interpolated gradients. "
-                             "'face' = flat per-triangle colors (no smoothing).")
-    smooth.add_argument("--smooth-shading", action="store_true", default=None,
-                        help="Enable smooth mesh shading (default: on)")
-    smooth.add_argument("--flat-shading", action="store_true",
-                        help="Force flat mesh shading")
-    smooth.add_argument("--auto-smooth-angle", type=float, default=None,
-                        help=f"Auto-smooth angle in degrees (default: {CFG.auto_smooth_angle})")
-
-    args = ap.parse_args(argv)
-
-    # Apply to settings
-    if args.resolution is not None: CFG.resolution = tuple(args.resolution)
-    if args.samples is not None:    CFG.render_samples = args.samples
-    if args.engine is not None:     CFG.render_engine = args.engine
-    if args.y_gap is not None:      CFG.fish_y_gap = args.y_gap
-    CFG.allow_missing_stream = bool(args.allow_missing_stream)
-    args.frames = parse_frame_indices(args.frames)
-
-    # Grid
-    if args.grid_spacing is not None:    CFG.grid_spacing = args.grid_spacing
-    if args.grid_line_width is not None: CFG.grid_line_width = args.grid_line_width
-    if args.grid_min_px is not None:     CFG.grid_min_pixels = args.grid_min_px
-    if args.no_grid:                     CFG.grid_enable = False
-
-    # Smoothing
-    if args.blend_iters is not None:      CFG.color_blend_iters = args.blend_iters
-    if args.blend_self_weight is not None: CFG.color_blend_self_weight = args.blend_self_weight
-    if args.boundary_weight is not None:   CFG.boundary_weight = args.boundary_weight
-    if args.color_domain is not None:      CFG.color_domain = args.color_domain
-    if args.auto_smooth_angle is not None: CFG.auto_smooth_angle = args.auto_smooth_angle
-    if args.flat_shading:
-        CFG.smooth_shading = False
-    elif args.smooth_shading:
-        CFG.smooth_shading = True
-
-    return args
-
-
 if __name__ == "__main__":
     try:
-        args = parse_args()
+        if not CFG.frame_indices:
+            raise ValueError("Settings.frame_indices must contain at least one frame index.")
+
         print("=" * 50)
-        print(f"  Input:  {args.input}")
-        print(f"  Output: {args.output}")
-        print(f"  Frames: {args.frames}")
+        print(f"  Input:  {CFG.input_dir}")
+        print(f"  Output: {CFG.output_path}")
+        print(f"  Frames: {CFG.frame_indices}")
         print(f"  {CFG.resolution[0]}×{CFG.resolution[1]}  samples={CFG.render_samples}")
         print(f"  Smoothing: domain={CFG.color_domain}  iters={CFG.color_blend_iters}  "
               f"self_w={CFG.color_blend_self_weight}  boundary_w={CFG.boundary_weight}")
         print(f"  Shading: {'smooth' if CFG.smooth_shading else 'flat'} "
               f"(auto-smooth angle={CFG.auto_smooth_angle}°)")
         print("=" * 50)
-        render_overlay(args.input, args.output, args.frames)
+        render_overlay(CFG.input_dir, CFG.output_path, CFG.frame_indices)
         print("\nDone!")
     except Exception as exc:
         print(f"\nERROR: {exc}", file=sys.stderr)

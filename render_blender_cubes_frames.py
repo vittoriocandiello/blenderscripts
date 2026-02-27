@@ -3,16 +3,13 @@
 render_blender_cubes_frames.py — Headless Blender renderer for cubes that saves
 one PNG per selected frame index.
 
-Usage:
-    blender --background --python render_blender_cubes_frames.py -- \
-        --input preprocessed/ --output renders/cubes.png \
-        --frames 0 64, 63 34 --resolution 1920 1080 --samples 128
+Run:
+    blender --background --python render_blender_cubes_frames.py
 
-Output naming:
-    cubes_0.png, cubes_64.png, cubes_63.png, cubes_34.png
+All options are defined in `Settings` below.
 """
 
-import os, sys, glob, argparse, math, tempfile
+import os, sys, glob, math, tempfile
 import numpy as np
 import bpy
 from mathutils import Vector
@@ -24,15 +21,22 @@ from mathutils import Vector
 
 class Settings:
 
+    # ── Input / output ───────────────────────────────────────
+    input_dir       = "preprocessed/jumpercoseq"
+    output_path     = "renders/cubes.png"      # produces cubes_<frame>.png
+    frame_indices   = [0, 100, 400]            # exactly 3 frames (enforced)
+    stream1         = "cube1"
+    stream2         = "cube2"
+
     # ── Resolution ────────────────────────────────────────────
-    resolution      = (1920, 1080)
-    render_samples  = 64        # 16=test, 128+=final
+    resolution      = (500, 250)
+    render_samples  = 8       # 16=test, 128+=final
     render_engine   = "CYCLES"  # "CYCLES" or "BLENDER_EEVEE_NEXT"
     use_gpu         = True
     fps             = 60
 
-    # ── Camera (orthographic at a jump-friendly angle) ────────
-    ortho_padding       = 1.14
+    # ── Camera (fixed orthographic rig) ──────────────────────
+    ortho_padding       = 1.20
     camera_follow       = False
     camera_track_alpha  = 0.75
     camera_elevation_deg = 18.0   # lower camera for stronger low-angle look
@@ -46,17 +50,23 @@ class Settings:
 
     # ── Grid ground plane ─────────────────────────────────────
     grid_enable      = True
-    grid_color       = (0.55, 0.55, 0.55)   # thin line color (medium gray)
-    grid_bg_color    = (1.0, 1.0, 1.0)    # ground plane fill (near-white)
-    grid_emission    = 1.0                    # emission strength for ground
-    grid_line_width  = 0.004                  # line thickness in scene units
-    grid_spacing     = 0.1                   # auto-computed if None
+    grid_color       = (0.45, 0.45, 0.45)   # thin line color (medium gray)
+    grid_bg_color    = (1.0, 1.0, 1.0)      # ground plane fill (near-white)
+    grid_emission    = 1.0                  # emission strength for ground
+    grid_line_width  = 0.004                 # base line thickness in scene units
+    grid_spacing     = 0.03                  # auto-computed if None
     grid_margin      = 0.60
     grid_cover_scale = 1.30
     grid_z_offset    = 0.10
+    ground_roughness = 0.98
+    ground_specular  = 0.03
+    ground_emission  = 0.25
+
+    # ── Subtle depth offset ──────────────────────────────────
+    cube_z_lift      = 0.0
+    ground_drop      = 0.0
 
     # ── Lighting ──────────────────────────────────────────────
-    # Three-point area rig (parented to camera rig).
     key_energy       = 520.0
     key_color        = (1.0, 0.95, 0.90)
     key_size_factor  = 0.55
@@ -76,30 +86,12 @@ class Settings:
     cube_y_gap      = 0.0       # 0 = auto from stream extent
 
     # ── Color themes ──────────────────────────────────────────
-    # label → (R, G, B) in 0–1.
-    # Shared palette between both cubes for direct material comparison.
     theme_cube1 = {
         "name": "StudioBlue",
-        "default": (0.064, 0.176, 0.60),    # body
-        0: (0.52, 0.60, 0.78),              # light blue
-        1: (0.15, 0.00, 0.00),
-        2: (0.15, 0.00, 0.00),
-        3: (0.98, 0.66, 0.22),              # high-contrast golden yellow
-        4: (0.31, 0.10, 0.38),              # deep violet
-        5: (0.18, 0.34, 0.08),
-        6: (0.08, 0.32, 0.28),
-        7: (0.40, 0.28, 0.04),
-        8: (0.08, 0.30, 0.18),
-        9: (0.38, 0.08, 0.24),
-        10: (0.42, 0.18, 0.06),
-    }
-
-    theme_cube2 = {
-        "name": "StudioBlue",
         "default": (0.064, 0.176, 0.60),
-        0: (0.52, 0.60, 0.78),              # light blue
-        1: (0.15, 0.00, 0.00),
-        2: (0.15, 0.00, 0.00),
+        0: (0.925, 0.925, 0.925),           # passive
+        1: (1.0, 0.35, 0.35),               # muscle 1
+        2: (0.40, 0.40, 1.0),               # muscle 2
         3: (0.98, 0.66, 0.22),
         4: (0.31, 0.10, 0.38),
         5: (0.18, 0.34, 0.08),
@@ -110,18 +102,21 @@ class Settings:
         10: (0.42, 0.18, 0.06),
     }
 
+    theme_cube2 = theme_cube1.copy()
+
     # ── Material ──────────────────────────────────────────────
-    roughness       = 0.85
-    specular        = 0.05
-    metallic        = 0.0
+    roughness       = 0.28
+    specular        = 0.35
+    metallic        = 0.02
     emission_body   = 0.005
-    emission_label  = 0.035
+    emission_label  = 0.02
     color_attribute_name = "LabelColor"
     color_blend_iters    = 1
     color_blend_self_weight = 10.0
-    boundary_weight      = 0.003  # less blending across muscle/non-muscle boundaries
-    auto_smooth_angle_deg = 48.0
-    # Kept for compatibility with helper utilities not used in cube scene.
+    boundary_weight      = 0.01
+    color_domain         = "vertex"  # "vertex" or "face"
+    smooth_shading       = True
+    auto_smooth_angle    = 48.0
     line_color      = (0.0, 0.0, 0.0)
     line_thickness  = 0.0
     line_extend     = 0.0
@@ -513,12 +508,12 @@ def ensure_outward_normals(obj):
 
 
 def apply_surface_shading(obj):
-    """Smooth shading with restrained auto-smooth to keep cube edges readable."""
+    use_smooth = CFG.smooth_shading
     for poly in obj.data.polygons:
-        poly.use_smooth = True
-    if hasattr(obj.data, "use_auto_smooth"):
+        poly.use_smooth = use_smooth
+    if use_smooth and hasattr(obj.data, "use_auto_smooth"):
         obj.data.use_auto_smooth = True
-        obj.data.auto_smooth_angle = math.radians(CFG.auto_smooth_angle_deg)
+        obj.data.auto_smooth_angle = math.radians(CFG.auto_smooth_angle)
 
 
 def smooth_track(values, alpha):
@@ -994,25 +989,6 @@ def clone_stream(frames, meta):
     return frames_out, meta_out
 
 
-def parse_frame_indices(raw_values):
-    frame_indices = []
-    for token in raw_values:
-        for part in token.split(","):
-            part = part.strip()
-            if not part:
-                continue
-            try:
-                frame_indices.append(int(part))
-            except ValueError as exc:
-                raise ValueError(
-                    f"Invalid frame index '{part}' in --frames. "
-                    "Use integers separated by spaces and/or commas."
-                ) from exc
-    if not frame_indices:
-        raise ValueError("No valid frame indices provided in --frames.")
-    return frame_indices
-
-
 def sanitize_frame_indices(frame_indices, n_frames):
     selected = []
     seen = set()
@@ -1065,17 +1041,17 @@ def render_selected_frames(input_dir, output_arg, frame_indices, stream1="cube1"
     if not frames1 or not frames2:
         if CFG.allow_missing_stream:
             if not frames1:
-                print(f"  [{loaded1}] missing: duplicating {loaded2} (--allow-missing-stream enabled).")
+                print(f"  [{loaded1}] missing: duplicating {loaded2} (allow_missing_stream enabled).")
                 frames1, meta1 = clone_stream(frames2, meta2)
             if not frames2:
-                print(f"  [{loaded2}] missing: duplicating {loaded1} (--allow-missing-stream enabled).")
+                print(f"  [{loaded2}] missing: duplicating {loaded1} (allow_missing_stream enabled).")
                 frames2, meta2 = clone_stream(frames1, meta1)
         else:
             missing = loaded1 if not frames1 else loaded2
             raise FileNotFoundError(
                 f"Missing required stream '{missing}' in {input_dir}. "
                 "Run preprocess_cubes_hex.py (or preprocess_cubes.py / preprocess.py), "
-                "or pass --allow-missing-stream."
+                "or set CFG.allow_missing_stream = True."
             )
 
     n = min(len(frames1), len(frames2))
@@ -1107,8 +1083,13 @@ def render_selected_frames(input_dir, output_arg, frame_indices, stream1="cube1"
     print(f"  Y offsets: cube1={y_off1:+.4f}  cube2={y_off2:+.4f}")
 
     coverage = compute_frame_coverage(frames1_sel, frames2_sel, y_off1, y_off2, n_selected)
-    track_z = (coverage["z_min"] + coverage["z_max"]) * 0.5
-    z_ground = coverage["z_min"] - max(0.02, CFG.grid_z_offset * coverage["z_span"])
+    z_lift = float(max(CFG.cube_z_lift, 0.0))
+    track_z = (coverage["z_min"] + coverage["z_max"]) * 0.5 + z_lift
+    z_ground = (
+        coverage["z_min"]
+        - max(0.05, CFG.grid_z_offset * coverage["z_span"])
+        - float(max(CFG.ground_drop, 0.0))
+    )
 
     aspect = CFG.resolution[0] / CFG.resolution[1]
     if CFG.camera_follow:
@@ -1181,6 +1162,9 @@ def render_selected_frames(input_dir, output_arg, frame_indices, stream1="cube1"
     f1 = frames1[fi0]; f2 = frames2[fi0]
     v1 = f1["vertices"].copy(); v1[:, 1] += y_off1
     v2 = f2["vertices"].copy(); v2[:, 1] += y_off2
+    if z_lift > 0.0:
+        v1[:, 2] += z_lift
+        v2[:, 2] += z_lift
 
     obj1 = mesh_from_arrays("Cube1", v1, f1["triangles"])
     ensure_outward_normals(obj1)
@@ -1202,6 +1186,9 @@ def render_selected_frames(input_dir, output_arg, frame_indices, stream1="cube1"
             f1 = frames1[fi]; f2 = frames2[fi]
             v1 = f1["vertices"].copy(); v1[:, 1] += y_off1
             v2 = f2["vertices"].copy(); v2[:, 1] += y_off2
+            if z_lift > 0.0:
+                v1[:, 2] += z_lift
+                v2[:, 2] += z_lift
 
             update_mesh(obj1, v1, f1["triangles"])
             ensure_outward_normals(obj1)
@@ -1224,72 +1211,30 @@ def render_selected_frames(input_dir, output_arg, frame_indices, stream1="cube1"
     return n_selected
 
 
-# ==================================================================
-#  CLI
-# ==================================================================
-
-def parse_args():
-    argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
-    ap = argparse.ArgumentParser(
-        description="Render selected cube frames to separate PNG images."
-    )
-    ap.add_argument("--input", required=True)
-    ap.add_argument("--output", required=True,
-                    help="Output base PNG path or output directory")
-    ap.add_argument("--frames", nargs="+", required=True,
-                    help="Frame indices separated by spaces and/or commas (e.g. --frames 0 64, 63 34)")
-    ap.add_argument("--stream1", default="cube1")
-    ap.add_argument("--stream2", default="cube2")
-    ap.add_argument("--resolution", type=int, nargs=2, default=None)
-    ap.add_argument("--samples", type=int, default=None)
-    ap.add_argument("--engine", choices=["CYCLES","BLENDER_EEVEE_NEXT","BLENDER_EEVEE"], default=None)
-    ap.add_argument("--y-gap", type=float, default=None)
-    ap.add_argument("--camera-follow", action="store_true")
-    ap.add_argument("--blend-iters", type=int, default=None,
-                    help=f"Color smoothing iterations (default: {CFG.color_blend_iters}).")
-    ap.add_argument("--blend-self-weight", type=float, default=None,
-                    help=f"Smoothing self-retention weight (default: {CFG.color_blend_self_weight}).")
-    ap.add_argument("--boundary-weight", type=float, default=None,
-                    help=f"Cross-label smoothing weight (default: {CFG.boundary_weight}).")
-    ap.add_argument("--grid-spacing", type=float, default=None,
-                    help="Grid line spacing in scene units (default: auto).")
-    ap.add_argument("--grid-line-width", type=float, default=None,
-                    help=f"Grid line thickness (default: {CFG.grid_line_width}).")
-    ap.add_argument("--no-grid", action="store_true",
-                    help="Disable the grid ground plane.")
-    ap.add_argument("--allow-missing-stream", action="store_true")
-    args = ap.parse_args(argv)
-    if args.resolution is not None: CFG.resolution = tuple(args.resolution)
-    if args.samples is not None:    CFG.render_samples = args.samples
-    if args.engine is not None:     CFG.render_engine = args.engine
-    if args.y_gap is not None:      CFG.cube_y_gap = args.y_gap
-    if args.blend_iters is not None:       CFG.color_blend_iters = args.blend_iters
-    if args.blend_self_weight is not None: CFG.color_blend_self_weight = args.blend_self_weight
-    if args.boundary_weight is not None:   CFG.boundary_weight = args.boundary_weight
-    if args.grid_spacing is not None:      CFG.grid_spacing = args.grid_spacing
-    if args.grid_line_width is not None:   CFG.grid_line_width = args.grid_line_width
-    if args.no_grid:                       CFG.grid_enable = False
-    CFG.camera_follow = bool(args.camera_follow)
-    CFG.allow_missing_stream = bool(args.allow_missing_stream)
-    args.frames = parse_frame_indices(args.frames)
-    return args
-
-
 if __name__ == "__main__":
     try:
-        args = parse_args()
+        if len(CFG.frame_indices) != 3:
+            raise ValueError(
+                "Settings.frame_indices must contain exactly 3 frame indices."
+            )
+
         print("=" * 50)
-        print(f"  Input:  {args.input}")
-        print(f"  Output: {args.output}")
-        print(f"  Frames: {args.frames}")
+        print(f"  Input:  {CFG.input_dir}")
+        print(f"  Output: {CFG.output_path}")
+        print(f"  Frames: {CFG.frame_indices}")
+        print(f"  Streams: {CFG.stream1}, {CFG.stream2}")
         print(f"  {CFG.resolution[0]}×{CFG.resolution[1]}  samples={CFG.render_samples}")
+        print(f"  Smoothing: domain={CFG.color_domain}  iters={CFG.color_blend_iters}  "
+              f"self_w={CFG.color_blend_self_weight}  boundary_w={CFG.boundary_weight}")
+        print(f"  Shading: {'smooth' if CFG.smooth_shading else 'flat'} "
+              f"(auto-smooth angle={CFG.auto_smooth_angle}°)")
         print("=" * 50)
         render_selected_frames(
-            args.input,
-            args.output,
-            args.frames,
-            stream1=args.stream1,
-            stream2=args.stream2,
+            CFG.input_dir,
+            CFG.output_path,
+            CFG.frame_indices,
+            stream1=CFG.stream1,
+            stream2=CFG.stream2,
         )
         print("\nDone!")
     except Exception as exc:
