@@ -28,8 +28,9 @@ class Settings:
     stream2         = "cube2"
 
     # ── Resolution ────────────────────────────────────────────
-    resolution      = (500, 250)
-    render_samples  = 8       # 16=test, 128+=final
+    resolution      = (3840,2160)
+    #resolution      = (1920,1080)  # test
+    render_samples  = 128       # 16=test, 128+=final
     render_engine   = "CYCLES"  # "CYCLES" or "BLENDER_EEVEE_NEXT"
     use_gpu         = True
     fps             = 60
@@ -47,12 +48,12 @@ class Settings:
 
     # ── Grid ground plane ─────────────────────────────────────
     grid_enable      = True
-    grid_color       = (0.55, 0.55, 0.55)   # thin line color (medium gray)
+    grid_color       = (0.45, 0.45, 0.45)   # thin line color (medium gray)
     grid_bg_color    = (1.0, 1.0, 1.0)    # ground plane fill (near-white)
     grid_emission    = 1.0                    # emission strength for ground
-    grid_line_width  = 0.01                  # base line thickness in scene units
+    grid_line_width  = 0.003                  # base line thickness in scene units
     grid_min_pixels  = 5.0                   # minimum visible line width in pixels
-    grid_spacing     = 0.3                   # auto-computed if None
+    grid_spacing     = 0.04                   # auto-computed if None
     grid_margin      = 0.60
     grid_cover_scale = 1.30
     grid_z_offset    = 0.10
@@ -63,10 +64,14 @@ class Settings:
     # ── Subtle depth offset ──────────────────────────────────
     cube_z_lift      = 0.0
     ground_drop      = 0.0
+    ground_raise     = 0.05
+    # Per-cube XY offsets in world space (units). Z not affected.
+    cube1_xy_offset  = (0.0, 0.0)
+    cube2_xy_offset  = (-0.2, -0.1)
 
     # ── Lighting ──────────────────────────────────────────────
     # Three-point area rig (parented to camera rig).
-    key_energy       = 520.0
+    key_energy       = 1200.0
     key_color        = (1.0, 0.95, 0.90)
     key_size_factor  = 0.55
 
@@ -83,6 +88,7 @@ class Settings:
 
     # ── Cube layout ───────────────────────────────────────────
     cube_y_gap      = 0.0       # 0 = auto from stream extent
+    swap_streams    = True     # swap stream1/stream2 after load
 
     # ── Color themes ──────────────────────────────────────────
     # Shared palette between both cubes for direct material comparison.
@@ -775,7 +781,9 @@ def setup_lights(rig, ortho_scale, cam_distance):
 
     add_light(
         "Key", CFG.key_energy, CFG.key_color, CFG.key_size_factor,
-        (-spread * 0.40, -spread * 0.40, 0.0),
+        # (-spread * 0.40, -spread * 0.40, 0.0),
+        (-spread * 1.5, spread * 1.5, spread * 0.35)
+
     )
     add_light(
         "Fill", CFG.fill_energy, CFG.fill_color, CFG.fill_size_factor,
@@ -913,8 +921,8 @@ def create_grid_ground(x_min, x_max, y_min, y_max, z_pos, camera_ortho=None):
     )
     line_px = line_w / max(px_world, 1e-8)
     line_h = line_w * 0.5  # Z thickness (thin slab)
-    line_z = z_pos + 0.005 + line_h * 0.5  # lift above ground to avoid z-fighting
-
+    # Align grid line bottoms with the ground plane.
+    line_z = z_pos + line_h * 0.1
     # Collect all line objects under an empty for tidiness
     grid_parent = bpy.data.objects.new("GridLines", None)
     bpy.context.collection.objects.link(grid_parent)
@@ -1086,6 +1094,10 @@ def render_selected_frames(input_dir, output_arg, frame_indices, stream1="cube1"
     print(f"Loading {stream1}..."); frames1, meta1 = load_frames(input_dir, stream1, allow_missing=True)
     print(f"Loading {stream2}..."); frames2, meta2 = load_frames(input_dir, stream2, allow_missing=True)
     loaded1, loaded2 = stream1, stream2
+    if CFG.swap_streams:
+        frames1, frames2 = frames2, frames1
+        meta1, meta2 = meta2, meta1
+        loaded1, loaded2 = loaded2, loaded1
 
     # Compatibility fallback if the user reuses preprocess.py (fish1/fish2 folders).
     if not frames1 and not frames2 and (stream1, stream2) == ("cube1", "cube2"):
@@ -1148,6 +1160,7 @@ def render_selected_frames(input_dir, output_arg, frame_indices, stream1="cube1"
     track_z = (coverage["z_min"] + coverage["z_max"]) * 0.5 + z_lift
     z_ground = (
         coverage["z_min"]
+        + float(max(CFG.ground_raise, 0.0))
         - max(0.05, CFG.grid_z_offset * coverage["z_span"])
         - float(max(CFG.ground_drop, 0.0))
     )
@@ -1217,8 +1230,14 @@ def render_selected_frames(input_dir, output_arg, frame_indices, stream1="cube1"
     # Initial meshes for the first selected frame
     fi0 = selected[0]
     f1 = frames1[fi0]; f2 = frames2[fi0]
-    v1 = f1["vertices"].copy(); v1[:, 1] += y_off1
-    v2 = f2["vertices"].copy(); v2[:, 1] += y_off2
+    xy1 = np.array([CFG.cube1_xy_offset[0], CFG.cube1_xy_offset[1], 0.0], dtype=np.float32)
+    xy2 = np.array([CFG.cube2_xy_offset[0], CFG.cube2_xy_offset[1], 0.0], dtype=np.float32)
+    v1 = f1["vertices"].copy()
+    v2 = f2["vertices"].copy()
+    v1[:, 1] += y_off1
+    v2[:, 1] += y_off2
+    v1 += xy1
+    v2 += xy2
     if z_lift > 0.0:
         v1[:, 2] += z_lift
         v2[:, 2] += z_lift
@@ -1241,8 +1260,12 @@ def render_selected_frames(input_dir, output_arg, frame_indices, stream1="cube1"
 
         if out_i > 0:
             f1 = frames1[fi]; f2 = frames2[fi]
-            v1 = f1["vertices"].copy(); v1[:, 1] += y_off1
-            v2 = f2["vertices"].copy(); v2[:, 1] += y_off2
+            v1 = f1["vertices"].copy()
+            v2 = f2["vertices"].copy()
+            v1[:, 1] += y_off1
+            v2[:, 1] += y_off2
+            v1 += xy1
+            v2 += xy2
             if z_lift > 0.0:
                 v1[:, 2] += z_lift
                 v2[:, 2] += z_lift
@@ -1297,3 +1320,4 @@ if __name__ == "__main__":
     except Exception as exc:
         print(f"\nERROR: {exc}", file=sys.stderr)
         sys.exit(1)
+
